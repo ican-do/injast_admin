@@ -1,0 +1,541 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:developer' show log;
+
+import 'package:http/http.dart' as http;
+import 'package:injast_admin/import_sync/import_models.dart';
+
+class AsnafMeta {
+  AsnafMeta({
+    required this.totalCount,
+    required this.totalPages,
+  });
+
+  final int totalCount;
+  final int totalPages;
+}
+
+class AsnafCollectProgress {
+  AsnafCollectProgress({
+    required this.stage,
+    required this.successCount,
+    required this.failedCount,
+    required this.plannedCount,
+    this.page,
+    this.name = '',
+    this.details = '',
+  });
+
+  final String stage;
+  final int successCount;
+  final int failedCount;
+  final int plannedCount;
+  final int? page;
+  final String name;
+  final String details;
+}
+
+class AsnafBotClient {
+  static const _base = 'https://apinovin.iranianasnaf.ir';
+
+  /// همان سرویس نشان بک‌اند (`test_address_2.js`). اگر `NESHAN_API_KEY` با
+  /// `--dart-define` ست شود، همان مقدار جایگزین این پیش‌فرض می‌شود.
+  static const _neshanApiKeyEmbedded = 'service.1c8e1ac2992643cfa931b8f52a6e0b39';
+
+  String get _neshanApiKey {
+    const fromEnv = String.fromEnvironment('NESHAN_API_KEY');
+    final t = fromEnv.trim();
+    return t.isNotEmpty ? t : _neshanApiKeyEmbedded;
+  }
+
+  /// آیا برای فراخوانی نشان کلید مؤثر در دسترس است (پیش‌فرض پروژه یا dart-define).
+  bool get isNeshanGeocodingConfigured => _neshanApiKey.trim().isNotEmpty;
+
+  Future<AsnafMeta> fetchMeta(String token) async {
+    final first = await _getJson(
+      '$_base/parvaneh/?management=True&page=1',
+      token,
+      retryOn429: true,
+    );
+    final totalCount = _toInt(first['count']);
+    final explicitPages = _toInt(
+      (first is Map)
+          ? (first['total_pages'] ?? first['totalPages'] ?? first['num_pages'] ?? first['pages'])
+          : null,
+    );
+    final firstPageSize = _extractResults(first).length;
+    final safePageSize = firstPageSize > 0 ? firstPageSize : 20;
+    final fallbackPages = totalCount <= 0 ? 1 : ((totalCount + safePageSize - 1) ~/ safePageSize);
+    final totalPages = explicitPages > 0 ? explicitPages : fallbackPages;
+    return AsnafMeta(totalCount: totalCount, totalPages: totalPages);
+  }
+
+  Future<List<ImportDraftRecord>> collectRecords({
+    required String token,
+    required String codeCo,
+    required int startPage,
+    required int endPage,
+    required bool updateDebtOnly,
+    int? maxRecords,
+    void Function(AsnafCollectProgress progress)? onProgress,
+  }) async {
+    final out = <ImportDraftRecord>[];
+    var successCount = 0;
+    var failedCount = 0;
+    var plannedCount = 0;
+
+    for (var page = startPage; page <= endPage; page++) {
+      onProgress?.call(
+        AsnafCollectProgress(
+          stage: 'fetch_page',
+          page: page,
+          successCount: successCount,
+          failedCount: failedCount,
+          plannedCount: plannedCount,
+          details: 'دریافت صفحه $page از $endPage',
+        ),
+      );
+      final pageJson = await _getJson(
+        '$_base/parvaneh/?management=True&page=$page',
+        token,
+        retryOn429: true,
+      );
+      final results = _extractResults(pageJson);
+      plannedCount += results.length;
+      if (maxRecords != null && plannedCount > maxRecords) {
+        plannedCount = maxRecords;
+      }
+      for (var i = 0; i < results.length; i++) {
+        if (maxRecords != null && out.length >= maxRecords) {
+          return out;
+        }
+        final row = results[i];
+        final parvanehId = _toStr(row['id']);
+        if (parvanehId.isEmpty) {
+          failedCount += 1;
+          continue;
+        }
+
+        try {
+          final detail =
+              await _getJson('$_base/parvaneh/$parvanehId/', token, retryOn429: true);
+          final payload = _mapParvandePayload(detail, codeCo);
+
+          if (!updateDebtOnly) {
+            final docs = await _getJson(
+              '$_base/docs/?parvaneh=$parvanehId&no_page=true',
+              token,
+              retryOn429: true,
+            );
+            final rawDocsList = _extractDocsList(docs);
+            final normalizedDocs = _normalizeDocs(docs);
+            final withLink = normalizedDocs
+                .where((m) => _toStr(m['link_doc']).trim().isNotEmpty)
+                .length;
+            log(
+              'stage=1_fetch_api | parvaneh=$parvanehId | api_list_len=${rawDocsList.length} | '
+              'normalized_len=${normalizedDocs.length} | with_link_doc=$withLink | '
+              'response=${_docsResponseShape(docs)}',
+              name: 'asnaf_import_docs',
+            );
+            payload['_docs_json'] = jsonEncode(normalizedDocs);
+            payload['_raste_name'] = _toStr(detail['raste_info']?['isic']?['title']);
+            payload['_raste_code'] = _toStr(detail['raste_info']?['isic']?['isic']);
+          }
+
+          final name =
+              '${_toStr(detail['user']?['first_name'])} ${_toStr(detail['user']?['last_name'])}'
+                  .trim();
+          final status = _toStr(detail['status_display']);
+          final debt = _toStr(detail['debt_amount']);
+
+          out.add(
+            ImportDraftRecord(
+              clientTempId: parvanehId,
+              payload: payload.map((k, v) => MapEntry(k, v.toString())),
+            ),
+          );
+          successCount += 1;
+
+          onProgress?.call(
+            AsnafCollectProgress(
+              stage: 'record_ok',
+              page: page,
+              successCount: successCount,
+              failedCount: failedCount,
+              plannedCount: plannedCount,
+              name: name,
+              details:
+                  'شناسه:$parvanehId | وضعیت:${status.isEmpty ? '-' : status} | بدهی:${debt.isEmpty ? '-' : debt}',
+            ),
+          );
+        } catch (e) {
+          failedCount += 1;
+          onProgress?.call(
+            AsnafCollectProgress(
+              stage: 'record_error',
+              page: page,
+              successCount: successCount,
+              failedCount: failedCount,
+              plannedCount: plannedCount,
+              name: 'شناسه $parvanehId',
+              details: 'خطا در پردازش رکورد: $e',
+            ),
+          );
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 850));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 1600));
+    }
+
+    return out;
+  }
+
+  Future<List<dynamic>> fetchParvandehPage({
+    required String token,
+    required int page,
+  }) async {
+    final pageJson = await _getJson(
+      '$_base/parvaneh/?management=True&page=$page',
+      token,
+      retryOn429: true,
+    );
+    return _extractResults(pageJson);
+  }
+
+  /// پارس مقدار بدهی از API (رشته با ویرگول، ارقام فارسی، …).
+  static double? parseDebtAmount(dynamic raw) {
+    if (raw == null) return null;
+    var s = raw.toString().trim();
+    if (s.isEmpty || s.toLowerCase() == 'null') return null;
+    s = s.replaceAll(',', '').replaceAll('،', '');
+    const fa = '۰۱۲۳۴۵۶۷۸۹';
+    const en = '0123456789';
+    for (var i = 0; i < fa.length; i++) {
+      s = s.replaceAll(fa[i], en[i]);
+    }
+    return double.tryParse(s);
+  }
+
+  static bool isNonZeroDebtAmount(double? v) => v != null && v.abs() > 1e-9;
+
+  bool _detailHasNonZeroDebt(dynamic detail) {
+    if (detail is! Map) return false;
+    return isNonZeroDebtAmount(parseDebtAmount(detail['debt_amount']));
+  }
+
+  /// فقط در صورت بدهی غیرصفر: یک درخواست جزئیات + payload بدون اسناد و ژئوکد.
+  /// [payload] شامل `_import_mode` = `debt_only` برای نهایی‌سازی سمت سرور است.
+  Future<ImportDraftRecord?> buildDebtOnlyDraftIfNonZeroDebt({
+    required String token,
+    required String codeCo,
+    required String parvanehId,
+  }) async {
+    final detail = await _getJson('$_base/parvaneh/$parvanehId/', token, retryOn429: true);
+    if (!_detailHasNonZeroDebt(detail)) return null;
+    final d = (detail is Map) ? detail : const {};
+    final payload = _mapParvandePayload(d, codeCo);
+    payload['_import_mode'] = 'debt_only';
+    return ImportDraftRecord(
+      clientTempId: parvanehId,
+      payload: payload.map((k, v) => MapEntry(k, v.toString())),
+    );
+  }
+
+  Future<ImportDraftRecord> buildDraftRecord({
+    required String token,
+    required String codeCo,
+    required String parvanehId,
+    required bool includeDocs,
+    required bool geocodeIfMissing,
+  }) async {
+    final detail = await _getJson('$_base/parvaneh/$parvanehId/', token, retryOn429: true);
+    final payload = _mapParvandePayload(detail, codeCo);
+
+    if (includeDocs) {
+      final docs = await _getJson(
+        '$_base/docs/?parvaneh=$parvanehId&no_page=true',
+        token,
+        retryOn429: true,
+      );
+      final rawDocsList = _extractDocsList(docs);
+      final normalizedDocs = _normalizeDocs(docs);
+      final withLink = normalizedDocs
+          .where((m) => _toStr(m['link_doc']).trim().isNotEmpty)
+          .length;
+      log(
+        'stage=1_fetch_api | parvaneh=$parvanehId | api_list_len=${rawDocsList.length} | '
+        'normalized_len=${normalizedDocs.length} | with_link_doc=$withLink | '
+        'response=${_docsResponseShape(docs)}',
+        name: 'asnaf_import_docs',
+      );
+      payload['_docs_json'] = jsonEncode(normalizedDocs);
+      payload['_raste_name'] = _toStr(detail['raste_info']?['isic']?['title']);
+      payload['_raste_code'] = _toStr(detail['raste_info']?['isic']?['isic']);
+    }
+
+    if (geocodeIfMissing) {
+      final lat = payload['lat_store']?.trim() ?? '';
+      final lon = payload['long_store']?.trim() ?? '';
+      if (lat.isEmpty || lon.isEmpty) {
+        final geocoded = await geocodeAddress(payload['address_store'] ?? '');
+        if (geocoded != null) {
+          payload['lat_store'] = geocoded.$1;
+          payload['long_store'] = geocoded.$2;
+        }
+      }
+    }
+
+    return ImportDraftRecord(
+      clientTempId: parvanehId,
+      payload: payload.map((k, v) => MapEntry(k, v.toString())),
+    );
+  }
+
+  Future<List<Map<String, String>>> fetchAllRaste(String token) async {
+    final out = <Map<String, String>>[];
+    for (var page = 1; page <= 200; page++) {
+      final json = await _getJson(
+        '$_base/raste/?page=$page&ordering=-created_at',
+        token,
+        retryOn429: true,
+      );
+      final rows = _extractResults(json);
+      if (rows.isEmpty) break;
+      for (final row in rows) {
+        final m = row is Map ? row : const {};
+        out.add({
+          'title': _toStr(m['title']),
+          'isic': _toStr(m['isic']),
+        });
+      }
+      if (rows.length < 50) break;
+    }
+    return out;
+  }
+
+  Future<(String, String)?> geocodeAddress(String address) async {
+    final cleaned = _sanitizeAddressForGeocode(address);
+    if (cleaned.isEmpty) return null;
+    final key = _neshanApiKey;
+    if (key.trim().isEmpty) return null;
+    final uri = Uri.parse(
+      'https://api.neshan.org/v6/geocoding?address=${Uri.encodeQueryComponent(cleaned)}',
+    );
+    final res = await http.get(uri, headers: {'Api-Key': key});
+    if (res.statusCode < 200 || res.statusCode >= 300) return null;
+    final json = jsonDecode(res.body);
+    if (json is! Map) return null;
+    final lat = _toStr(json['location']?['y']);
+    final lon = _toStr(json['location']?['x']);
+    if (lat.isEmpty || lon.isEmpty) return null;
+    return (lat, lon);
+  }
+
+  /// همان منطق `sanitizeAddress` در `test_address_2.js` (بک‌اند).
+  String _sanitizeAddressForGeocode(String address) {
+    return address
+        .replaceAll(RegExp(r'[^\w\sآ-یء-ئ،.۰-۹]', unicode: true), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  Future<dynamic> _getJson(
+    String url,
+    String token, {
+    bool retryOn429 = false,
+  }) async {
+    var attempt = 0;
+    while (true) {
+      attempt++;
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {
+          'Authorization': 'JWT $token',
+          'Accept': 'application/json, text/plain, */*',
+          'Origin': 'https://iranianasnaf.ir',
+          'Referer': 'https://iranianasnaf.ir/',
+        },
+      );
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        return jsonDecode(res.body);
+      }
+      if (retryOn429 && res.statusCode == 429 && attempt < 4) {
+        await Future<void>.delayed(Duration(seconds: attempt * 2));
+        continue;
+      }
+      throw Exception('API error ${res.statusCode} for $url');
+    }
+  }
+
+  List<dynamic> _extractResults(dynamic pageJson) {
+    if (pageJson is List) return pageJson;
+    if (pageJson is Map && pageJson['results'] is List) {
+      return pageJson['results'] as List;
+    }
+    return const [];
+  }
+
+  /// پاسخ `GET .../docs/?parvaneh=...` گاهی آرایه است و گاهی شیء با `results` / `data` / ...
+  String _docsResponseShape(dynamic docsJson) {
+    if (docsJson is List) {
+      return 'List(len=${docsJson.length})';
+    }
+    if (docsJson is Map) {
+      final keys = docsJson.keys.map((k) => k.toString()).take(12).join(',');
+      return 'Map(keys=[$keys])';
+    }
+    return docsJson.runtimeType.toString();
+  }
+
+  List<dynamic> _extractDocsList(dynamic docsJson) {
+    if (docsJson is List) return docsJson;
+    if (docsJson is Map) {
+      const keys = ['results', 'data', 'docs', 'documents', 'items'];
+      for (final k in keys) {
+        final v = docsJson[k];
+        if (v is List) return v;
+      }
+    }
+    return const [];
+  }
+
+  /// لینک فایل سند در پاسخ‌های مختلف API (شیء `file` یا رشتهٔ مستقیم).
+  String _docLinkFromAsnafRow(Map<dynamic, dynamic> m) {
+    final f = m['file'];
+    if (f is String && f.trim().isNotEmpty) return f.trim();
+    if (f is Map) {
+      for (final k in ['file', 'url', 'path', 'src']) {
+        final v = _toStr(f[k]);
+        if (v.isNotEmpty) return v;
+      }
+    }
+    for (final k in ['link_doc', 'file_url', 'url', 'link', 'download_url', 'href']) {
+      final v = _toStr(m[k]);
+      if (v.isNotEmpty) return v;
+    }
+    return '';
+  }
+
+  String _docIdFromAsnafRow(Map<dynamic, dynamic> m) {
+    final f = m['file'];
+    if (f is Map) {
+      final id = _toStr(f['id']);
+      if (id.isNotEmpty) return id;
+    }
+    final id = _toStr(m['id']);
+    if (id.isNotEmpty) return id;
+    return _toStr(m['id_doc']);
+  }
+
+  List<Map<String, dynamic>> _normalizeDocs(dynamic docsJson) {
+    final rawList = _extractDocsList(docsJson);
+    return rawList.map<Map<String, dynamic>>((e) {
+      final m = e is Map ? Map<dynamic, dynamic>.from(e) : const <dynamic, dynamic>{};
+      return {
+        'parvaneh': _toStr(m['parvaneh']),
+        'user': _toStr(m['user']),
+        'id_doc': _docIdFromAsnafRow(m),
+        'link_doc': _docLinkFromAsnafRow(m),
+      };
+    }).toList();
+  }
+
+  Map<String, String> _mapParvandePayload(dynamic data, String codeCo) {
+    final d = (data is Map) ? data : const {};
+    final genderMap = {'m': 'آقا', 'f': 'خانم'};
+    const educationMap = {
+      '1': 'بی سواد',
+      '2': 'خواندن ونوشتن',
+      '3': 'پنجم ابتدایی',
+      '5': 'سیکل',
+      '6': 'دیپلم ردی',
+      '7': 'دیپلم',
+      '8': 'فوق دیپلم',
+      '9': 'لیسانس',
+      '10': 'فوق لیسانس',
+      '11': 'دکتری عمومی',
+    };
+    const religionMap = {
+      '1': 'وارد نشده',
+      '2': 'اسلام - شیعه',
+      '3': 'اسلام - سنی',
+      '4': 'مسیحی',
+      '8': 'سایر',
+      '9': 'اسلام سایر',
+    };
+    const militaryMap = {
+      'crd': 'دارای کارت پایان خدمت',
+      'med': 'معافیت پزشکی',
+      'edu': 'معافیت تحصیلی',
+      'nic': 'غیرمشمول',
+      'inc': 'مشمول خدمت',
+      '1': 'معافیت دو برادری',
+      '3': 'خرید خدمت',
+      '6': 'معافیت کفالت',
+      '7': 'معافیت رهبری',
+      '9': 'معافیت موارد خاص',
+      '11': 'معافیت سه برادری',
+    };
+    const maritalMap = {'mr': 'متأهل', 'sn': 'مجرد'};
+    const ownershipMap = {
+      '1': 'مالک',
+      '2': 'استیجاری',
+      '3': 'صلح نامه',
+      '4': 'هبه',
+      '5': 'قرارداد شراکت',
+      '6': 'مبایعه نامه',
+    };
+
+    return {
+      'id_parvandeh': _toStr(d['id']),
+      'code_co': codeCo,
+      'name_admin': _toStr(d['user']?['first_name']),
+      'family_admin': _toStr(d['user']?['last_name']),
+      'sex_admin': genderMap[_toStr(d['senf']?['user']?['gender'])] ?? '',
+      'sadere_admin': _toStr(d['user']?['issue_city']?['title']),
+      'tavalod_admin': _toStr(d['user']?['birth_date']),
+      'name_pedar_admin': _toStr(d['user']?['father_name']),
+      'num_shenasname_admin': _toStr(d['user']?['identity_number']),
+      'code_meli_admin': _toStr(d['user']?['national_id']),
+      'mob_admin': _toStr(d['user']?['mobile']),
+      'tel_admin': _toStr(d['senf']?['phone']),
+      'madrak_admin': educationMap[_toStr(d['senf']?['user']?['edu_degree'])] ?? '',
+      'din_admin': religionMap[_toStr(d['senf']?['user']?['religion'])] ?? '',
+      'sarbazi_admin': militaryMap[_toStr(d['senf']?['user']?['military_status'])] ?? '',
+      'taahol_admin': maritalMap[_toStr(d['user']?['marital_status'])] ?? '',
+      'name_store': _toStr(d['senf']?['title']),
+      'shenase_store': _toStr(d['senf']?['senf_code']),
+      'raste_store': _toStr(d['raste_info']?['isic']?['title']),
+      'masahat_store': _toStr(d['senf']?['area']),
+      'type_melki_store': ownershipMap[_toStr(d['senf']?['estate_type'])] ?? '',
+      'address_store': _toStr(d['senf']?['address']).isNotEmpty
+          ? _toStr(d['senf']?['address'])
+          : _toStr(d['user']?['address']),
+      'code_posti_store': _toStr(d['senf']?['postal_code']),
+      'mantaghe_store': '',
+      'lat_store': _toStr(d['senf']?['latitude']),
+      'long_store': _toStr(d['senf']?['longitude']),
+      'state_store': _toStr(d['senf']?['state']?['title']),
+      'city_store': _toStr(d['senf']?['city']?['title']),
+      'date_sodor_store': _toStr(d['start_at']),
+      'date_exp_store': _toStr(d['expire_date']),
+      'date_etebar_store': '',
+      'daraje_store': _toStr(d['grade']),
+      'num_parvande_store': _toStr(d['raste_info']?['parvaneh']),
+      'vaziyat_store': _toStr(d['status']),
+      'lbl_vaziyat_store': _toStr(d['status_display']),
+      'num_person_store': '',
+      'caption_parvande': _toStr(d['senf']?['loc_state']),
+      'id_user': '1000',
+      'act_parvande': '1',
+      'image_profile': _toStr(d['user']?['avatar']?['file']),
+      'image_parvaneh': _toStr(d['html_link']),
+      'licence_file': _toStr(d['licence']?['file']),
+      'money': _toStr(d['debt_amount']),
+    };
+  }
+
+  int _toInt(dynamic v) => int.tryParse(_toStr(v)) ?? 0;
+  String _toStr(dynamic v) => v?.toString() ?? '';
+}
