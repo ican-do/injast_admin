@@ -900,7 +900,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                       Expanded(
                         child: StreamBuilder<int>(
                           stream: Stream<int>.periodic(const Duration(milliseconds: 500), (i) => i),
-                          builder: (_, _) {
+                          builder: (_, __) {
                             final done = _processedCount + _failedCount;
                             final progress = _totalCount > 0 ? (done / _totalCount).clamp(0.0, 1.0) : null;
                             final remain = _totalCount > 0 ? (_totalCount - done).clamp(0, 1 << 30) : 0;
@@ -917,6 +917,8 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
+
+
                                   'این اجرا — جدید در موقت: $_sessionNewSavedCount | '
                                   'ردشده (قبلاً در لیست): $_sessionSkippedCount'
                                   '${recoveryMode == 'debt_full' || recoveryMode == 'debt_latest' ? ' | بدهی صفر (رد): $_sessionDebtZeroSkipped' : ''}',
