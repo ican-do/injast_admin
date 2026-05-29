@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -24,12 +25,34 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Windows
-        run: flutter build windows
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Download runtime prerequisites
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/prerequisites | Out-Null
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
+            -OutFile "dist/prerequisites/MicrosoftEdgeWebview2Setup.exe"
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
+            -OutFile "dist/prerequisites/vc_redist.x64.exe"
+
+      - name: Package distributable folder
+        shell: pwsh
+        run: |
+          $src = "build/windows/x64/runner/Release"
+          $dest = "dist/injast_admin_windows"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Recurse -Force "$src/*" $dest
+          Copy-Item -Force "tool/windows_release/INSTALL_FA.txt" $dest
+          Copy-Item -Force "tool/windows_release/install_prerequisites.bat" $dest
+          Copy-Item -Force "tool/windows_release/START_injast_admin.bat" $dest
+          New-Item -ItemType Directory -Force -Path "$dest/prerequisites" | Out-Null
+          Copy-Item -Force "dist/prerequisites/*" "$dest/prerequisites/"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: build/windows/x64/runner/Release/
-
+          path: dist/injast_admin_windows/

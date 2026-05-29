@@ -28,6 +28,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (!window.Create(L"injast_admin", origin, size)) {
+    ::MessageBoxW(
+        nullptr,
+        L"برنامه اجرا نشد.\n\n"
+        L"• کل پوشه برنامه (شامل data و dll) را کپی کنید\n"
+        L"• install_prerequisites.bat را اجرا کنید\n"
+        L"• ویندوز 10/11 نسخه 64-bit لازم است",
+        L"Injast Admin",
+        MB_OK | MB_ICONERROR);
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
