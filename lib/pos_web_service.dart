@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:injast_admin/import_sync/asnaf_recovery_store.dart';
+import 'package:injast_admin/local_cache/offline_session_store.dart';
 import 'package:injast_admin/server_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -80,14 +82,26 @@ class PosWebService {
       if (list is! List || list.isEmpty) return;
 
       final row = list.first;
+      final wasLoggedIn = _sessionUser != null;
       if (row is Map<String, dynamic>) {
         _sessionUser = row;
       } else if (row is Map) {
         _sessionUser = Map<String, dynamic>.from(row);
       }
 
+      // پس از ورود موفق با QR، توکن قدیمی اصناف پاک می‌شود تا IP/سشن قبلی دوباره استفاده نشود.
+      if (!wasLoggedIn && _sessionUser != null) {
+        await AsnafRecoveryStore().clearJwt();
+      }
+
       await _loadUnionInfo();
       await _loadMemberStats();
+      if (_sessionUser != null) {
+        await OfflineSessionStore().saveSession(
+          user: _sessionUser!,
+          unionInfo: _unionInfo,
+        );
+      }
     } catch (_) {
       // اگر سرور موقتاً در دسترس نبود، فقط تلاش بعدی انجام شود.
       return;
@@ -167,5 +181,18 @@ class PosWebService {
 
   void clearSessionUserOnly() {
     _sessionUser = null;
+  }
+
+  /// بارگذاری نشست ذخیره‌شده برای ورود آفلاین (بدون تماس با سرور).
+  Future<bool> restoreOfflineSession() async {
+    final saved = await OfflineSessionStore().readSession();
+    final user = saved.user;
+    if (user == null || (user['code_co']?.toString().trim().isEmpty ?? true)) {
+      return false;
+    }
+    _sessionUser = user;
+    _unionInfo = saved.unionInfo;
+    _memberStats = null;
+    return true;
   }
 }

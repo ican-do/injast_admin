@@ -121,7 +121,10 @@ class ImportSyncApi {
     throw Exception('خطا در ارسال دسته اطلاعات (${res.statusCode})');
   }
 
-  Future<ImportFinalizeResult> finalizeSession(String sessionId) async {
+  Future<ImportFinalizeResult> finalizeSession(
+    String sessionId, {
+    bool verboseLog = false,
+  }) async {
     final uri = Uri.parse(getApiUrl('insert/import/session/finalize'));
     final res = await http.post(
       uri,
@@ -129,12 +132,29 @@ class ImportSyncApi {
       body: jsonEncode({'session_id': sessionId}),
     );
     if (res.statusCode < 200 || res.statusCode >= 300) {
+      if (verboseLog) {
+        log(
+          'finalize HTTP ${res.statusCode} | body=${res.body}',
+          name: 'csv_import_test',
+        );
+      }
       throw Exception('خطا در نهایی‌سازی انتقال (${res.statusCode})');
     }
     final body = jsonDecode(res.body);
     if (body is! Map<String, dynamic>) {
       throw Exception('پاسخ نامعتبر از سرور در نهایی‌سازی');
     }
-    return ImportFinalizeResult.fromJson(body);
+    if (verboseLog) {
+      log('finalize raw response: $body', name: 'csv_import_test');
+    }
+    final result = ImportFinalizeResult.fromJson(body);
+    if (verboseLog) {
+      log(
+        'finalize parsed | success=${result.success} inserted=${result.inserted} '
+        'skipped=${result.skipped} failed=${result.failed} errors=${result.errors}',
+        name: 'csv_import_test',
+      );
+    }
+    return result;
   }
 }

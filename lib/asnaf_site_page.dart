@@ -1,20 +1,30 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:injast_admin/asnaf_live_operation_dialog.dart';
+import 'package:injast_admin/file_management/address_geocoding_service.dart';
 import 'package:injast_admin/import_sync/asnaf_bot_client.dart';
 import 'package:injast_admin/import_sync/asnaf_first_five_test_report_store.dart';
+import 'package:injast_admin/import_sync/asnaf_fetch_pace.dart';
+import 'package:injast_admin/import_sync/asnaf_human_pace.dart';
+import 'package:injast_admin/import_sync/asnaf_jwt_extract.dart';
+import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
 import 'package:injast_admin/import_sync/asnaf_recovery_store.dart';
+import 'package:injast_admin/import_sync/asnaf_webview_api.dart';
+import 'package:injast_admin/import_sync/asnaf_webview_download.dart';
 import 'package:injast_admin/import_sync/import_draft_store.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
-import 'package:injast_admin/import_sync/import_sync_api.dart';
+import 'package:injast_admin/local_cache/network_reachability.dart';
+import 'package:injast_admin/local_cache/offline_mode_prefs.dart';
+import 'package:injast_admin/local_cache/parvande_server_send.dart';
+import 'package:injast_admin/local_cache/sync_status.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-/// تعداد صفحات انتهایی API برای حالت «بروزرسانی جدیدترین موارد».
-const int _kAsnafLatestPagesWindow = 6;
+/// تعداد صفحات انتهایی API برای حالت «بروزرسانی جدیدترین موارد» (~۱۰۰ پرونده).
+const int _kAsnafLatestPagesWindow = 5;
 
 class _RecoveryProgressItem {
   const _RecoveryProgressItem({
@@ -49,10 +59,10 @@ class AsnafSitePage extends StatefulWidget {
 
 class _AsnafSitePageState extends State<AsnafSitePage> {
   final _bot = AsnafBotClient();
-  final _draftStore = ImportDraftStore();
-  final _syncApi = ImportSyncApi.instance;
+  late final ImportDraftStore _draftStore;
   final _stateStore = AsnafRecoveryStore();
   final _firstFiveTestReportStore = AsnafFirstFiveTestReportStore();
+  final _offlinePrefs = OfflineModePrefs();
 
   bool _busy = false;
   bool _stopRequested = false;
@@ -61,10 +71,12 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   bool _recoveryEndedAllowingSave = false;
   int _totalCount = 0;
   int _draftCount = 0;
+  int _pendingSendCount = 0;
+  bool _offlineMode = false;
+  ParvandeSyncCounts? _syncCounts;
   String _operationStatus = 'منتظر لاگین به وب سایت';
 
   InAppWebViewController? _webController;
-  bool _dialogOpen = false;
 
   // For dialog UI only (hidden from body).
   int _processedCount = 0;
@@ -76,6 +88,8 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   final List<String> _logs = [];
   final List<_RecoveryProgressItem> _recoveryProgress = [];
+  final ScrollController _liveLogScrollCtrl = ScrollController();
+  StreamController<void>? _liveUiStream;
   final ScrollController _recoveryProgressScrollCtrl = ScrollController();
 
   /// آیا حداقل یک گزارش تست ۵ پرونده در حافظهٔ محلی ذخیره شده است.
@@ -84,12 +98,28 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   @override
   void initState() {
     super.initState();
+    _liveUiStream = StreamController<void>.broadcast();
+    _draftStore = ImportDraftStore(widget.codeCo);
     unawaited(_loadState());
     unawaited(_refreshFirstFiveTestReportFlag());
+    unawaited(_purgeExpiredJwtOnOpen());
+  }
+
+  Future<void> _purgeExpiredJwtOnOpen() async {
+    final t = await _readToken();
+    if (t.isEmpty) return;
+    if (!AsnafJwtPolicy.isExpired(t)) return;
+    await _stateStore.clearJwt();
+    _appendLog('Expired JWT removed on page open.');
+    if (mounted) {
+      setState(() => _operationStatus = 'توکن منقضی پاک شد — در WebView دوباره لاگین کنید');
+    }
   }
 
   @override
   void dispose() {
+    _liveUiStream?.close();
+    _liveLogScrollCtrl.dispose();
     _recoveryProgressScrollCtrl.dispose();
     super.dispose();
   }
@@ -117,6 +147,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       }
     });
     _scrollRecoveryProgressToEnd();
+    _pulseLiveUi();
   }
 
   Future<void> _refreshFirstFiveTestReportFlag() async {
@@ -319,61 +350,352 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   }
 
   Future<void> _loadState() async {
-    final records = await _draftStore.read();
+    final counts = await _draftStore.syncCounts();
+    final offline = await _offlinePrefs.isOfflineEffective(widget.codeCo);
     final state = await _stateStore.readState();
     if (!mounted) return;
     setState(() {
-      _draftCount = records.length;
+      _syncCounts = counts;
+      _draftCount = counts.total;
+      _pendingSendCount = counts.pendingSend;
+      _offlineMode = offline;
       _totalCount = state?.totalPlanned ?? 0;
     });
   }
 
-  void _appendLog(String line) {
-    developer.log(line, name: 'AsnafSite');
-    _logs.insert(0, line);
-    if (_logs.length > 120) {
-      _logs.removeRange(120, _logs.length);
+  Future<void> _toggleOfflineMode(bool value) async {
+    if (!value) {
+      final online = await NetworkReachability.instance.isServerReachable();
+      if (!online) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('سرور در دسترس نیست؛ تا برقراری اتصال، حالت آفلاین فعال می‌ماند.'),
+          ),
+        );
+        return;
+      }
+      await _offlinePrefs.setUserOffline(widget.codeCo, false);
+      await _offlinePrefs.clearAutoOfflineIfOnline(widget.codeCo);
+    } else {
+      await _offlinePrefs.setUserOffline(widget.codeCo, true);
     }
+    if (!mounted) return;
+    setState(() => _offlineMode = value);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          value
+              ? 'حالت آفلاین: فقط حافظهٔ محلی (بدون API اصناف).'
+              : 'حالت آنلاین: استخراج و بروزرسانی از API فعال است.',
+        ),
+      ),
+    );
+  }
+
+  String _syncStatusLabel(ImportDraftRecord r) {
+    final st = ParvandeSyncStatusX.fromStorage(r.payload['_sync_status']);
+    return st.labelFa;
+  }
+
+  void _appendLog(String line) {
+    final now = DateTime.now();
+    final ts =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    final entry = '[$ts] $line';
+    developer.log(line, name: 'AsnafSite');
+    _logs.insert(0, entry);
+    if (_logs.length > 200) {
+      _logs.removeRange(200, _logs.length);
+    }
+    _pulseLiveUi();
+  }
+
+  void _pulseLiveUi() {
+    final s = _liveUiStream;
+    if (s != null && !s.isClosed) {
+      s.add(null);
+    }
+    WidgetsBinding.instance.scheduleFrameCallback((_) {
+      if (_liveLogScrollCtrl.hasClients) {
+        _liveLogScrollCtrl.jumpTo(0);
+      }
+    });
+  }
+
+  AsnafLiveOperationSnapshot _readLiveSnapshot() {
+    final status = _operationStatus;
+    final canResume = status.contains('متوقف') || status.contains('خطا در عملیات');
+    return AsnafLiveOperationSnapshot(
+      operationStatus: status,
+      currentRecord: _currentRecord,
+      processedCount: _processedCount,
+      failedCount: _failedCount,
+      totalCount: _totalCount,
+      sessionNewSavedCount: _sessionNewSavedCount,
+      sessionSkippedCount: _sessionSkippedCount,
+      sessionDebtZeroSkipped: _sessionDebtZeroSkipped,
+      logs: List<String>.from(_logs),
+      progressItems: _recoveryProgress
+          .map(
+            (e) => AsnafLiveProgressRow(
+              id: e.id,
+              subtitle: e.subtitle,
+              kind: e.kind,
+            ),
+          )
+          .toList(),
+      isBusy: _busy,
+      canResumeRecovery: canResume,
+      isPaused: _paused,
+      stopRequested: _stopRequested,
+      recoveryEndedAllowingSave: _recoveryEndedAllowingSave,
+      pendingSendCount: _pendingSendCount,
+      draftCount: _draftCount,
+    );
+  }
+
+  String _sessionTitle(String sessionMode) => switch (sessionMode) {
+        'full' => 'بروزرسانی کامل اطلاعات',
+        'latest' => 'بروزرسانی جدیدترین موارد',
+        'test_first_5' => 'تست ۵ پرونده',
+        'test_first_5_debt' => 'تست ۵ پروندهٔ دارای بدهی',
+        'debt_full' => 'بروزرسانی بدهی پرونده‌ها',
+        'debt_latest' => 'بروزرسانی بدهی (جدیدترین)',
+        'server_send' => 'ارسال به سرور',
+        _ => 'عملیات اصناف',
+      };
+
+  void _beginLiveSession(String sessionMode, {AsnafMeta? planMeta}) {
+    AsnafFetchPace.currentMode = AsnafFetchPaceMode.safe;
+    if (sessionMode != 'debt_full' && sessionMode != 'debt_latest') {
+      AsnafHumanPace.instance.resetSession();
+    }
+    _logs.clear();
+    _recoveryProgress.clear();
+    setState(() {
+      _busy = true;
+      _stopRequested = false;
+      _paused = false;
+      _recoveryEndedAllowingSave = false;
+      _processedCount = 0;
+      _failedCount = 0;
+      _sessionSkippedCount = 0;
+      _sessionNewSavedCount = 0;
+      _sessionDebtZeroSkipped = 0;
+      _currentRecord = '—';
+      _totalCount = switch (sessionMode) {
+        'test_first_5' || 'test_first_5_debt' => 5,
+        'full' || 'debt_full' || 'server_send' => planMeta?.totalCount ?? 0,
+        'latest' => _kAsnafLatestPagesWindow * 20,
+        _ => planMeta?.totalCount ?? 0,
+      };
+      _operationStatus = switch (sessionMode) {
+        'test_first_5' => 'آمادهٔ تست ۵ پرونده…',
+        'test_first_5_debt' => 'آمادهٔ تست بدهی…',
+        'full' => 'آمادهٔ بروزرسانی کامل…',
+        'latest' => 'آمادهٔ بروزرسانی جدیدترین‌ها…',
+        'debt_full' => 'آمادهٔ بروزرسانی بدهی…',
+        'server_send' => 'آمادهٔ ارسال به سرور…',
+        _ => 'آمادهٔ شروع…',
+      };
+    });
+    _appendLog('▶ شروع: ${_sessionTitle(sessionMode)}');
+  }
+
+  /// دیالوگ زنده بلافاصله باز می‌شود؛ کار در پس‌زمینه ادامه دارد.
+  Future<void> _openLiveOperationDialogThenRun({
+    required String sessionMode,
+    AsnafMeta? planMeta,
+    required Future<void> Function() run,
+  }) async {
+    _beginLiveSession(sessionMode, planMeta: planMeta);
+    if (!mounted) return;
+    unawaited(
+      run().whenComplete(() {
+        if (!mounted) return;
+        _appendLog('── پایان عملیات ──');
+        _pulseLiveUi();
+      }),
+    );
+    await _showOperationDialog(sessionMode: sessionMode);
   }
 
   Future<String> _readToken() async => _stateStore.readJwt();
 
-  Future<void> _extractAndSaveToken({bool silent = false}) async {
-    final c = _webController;
-    if (c == null) return;
-    setState(() => _busy = true);
-    try {
-      const js = '''
-(() => {
-  const candidates = ['token', 'access_token', 'Authorization', 'authorization', 'jwt', 'authToken'];
-  const storage = window.localStorage || {};
-  let selected = '';
-  for (const k of candidates) {
-    const v = storage.getItem(k);
-    if (v && v.trim()) { selected = v.trim(); break; }
+  Future<void> _clearStoredJwt() async {
+    await _stateStore.clearJwt();
+    _appendLog('JWT cleared (manual or policy).');
+    if (!mounted) return;
+    setState(() => _operationStatus = 'توکن اصناف پاک شد — در WebView لاگین کنید');
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'توکن JWT اصناف پاک شد. فقط پس از لاگین کامل در پنل، بازیابی را شروع کنید.',
+        ),
+        duration: Duration(seconds: 6),
+      ),
+    );
   }
-  if (!selected) {
-    for (let i = 0; i < storage.length; i++) {
-      const k = storage.key(i);
-      const v = storage.getItem(k);
-      if (!k || !v) continue;
-      const lk = k.toLowerCase();
-      if (lk.includes('token') || lk.includes('auth') || lk.includes('jwt')) {
-        selected = v.trim();
-        break;
+
+  Future<bool> _handleAsnafAuthFailure(Object e) async {
+    if (e is! AsnafApiAuthException) return false;
+    await _stateStore.clearJwt();
+    _appendLog('API ${e.statusCode} — JWT cleared; recovery stopped.');
+    if (!mounted) return true;
+    setState(() => _operationStatus = 'دسترسی API قطع شد — لاگین مجدد در WebView');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'خطای ${e.statusCode} از API اصناف (احتمال توکن نامعتبر یا محدودیت IP). '
+          'چند ساعت صبر کنید یا از پشتیبانی اصناف بپرسید.',
+        ),
+        duration: const Duration(seconds: 10),
+      ),
+    );
+    return true;
+  }
+
+  bool _isHardNetworkError(Object e) {
+    final m = e.toString().toLowerCase();
+    return m.contains('timed out') ||
+        m.contains('timeout') ||
+        m.contains('socketexception') ||
+        m.contains('connection reset') ||
+        m.contains('connection refused');
+  }
+
+  void _syncBotWebViewApi() {
+    final c = _webController;
+    _bot.webViewApi = c != null ? AsnafWebViewApi(c) : null;
+  }
+
+  Future<void> _saveWebViewDownload({
+    required WebUri url,
+    String? mimeType,
+    String? suggestedFilename,
+    String? contentDisposition,
+  }) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('در حال دانلود فایل…'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    try {
+      final token = await _readToken();
+      final path = await AsnafWebViewDownload.saveFromUrl(
+        url: url,
+        mimeType: mimeType,
+        suggestedFilename: suggestedFilename,
+        contentDisposition: contentDisposition,
+        jwtToken: token,
+      );
+      if (!mounted) return;
+      if (path == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ذخیره فایل لغو شد.')),
+        );
+        return;
       }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('فایل ذخیره شد:\n$path'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطا در دانلود: $e')),
+      );
     }
   }
-  if (selected.toLowerCase().startsWith('bearer ')) selected = selected.substring(7).trim();
-  if (selected.toLowerCase().startsWith('jwt ')) selected = selected.substring(4).trim();
-  return JSON.stringify({ token: selected });
-})();
-''';
-      final raw = await c.evaluateJavascript(source: js);
-      final text = raw?.toString() ?? '';
-      final decoded = jsonDecode(text);
-      final token = (decoded is Map ? decoded['token'] : null)?.toString().trim() ?? '';
-      if (token.isEmpty) {
+
+  Future<void> _maybeOfferSaveCsvPage(
+    InAppWebViewController controller,
+    WebUri? url,
+  ) async {
+    final urlStr = url?.toString() ?? '';
+    if (!AsnafWebViewDownload.looksLikeFileUrl(urlStr)) return;
+
+    String? contentType;
+    try {
+      contentType = (await controller.evaluateJavascript(
+        source: "document.contentType || ''",
+        contentWorld: ContentWorld.PAGE,
+      ))
+          ?.toString();
+    } catch (_) {}
+
+    final ct = contentType?.toLowerCase() ?? '';
+    final isTextExport = ct.contains('csv') ||
+        ct.contains('text/plain') ||
+        urlStr.toLowerCase().contains('.csv');
+    if (!isTextExport) return;
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text(
+          'فایل CSV در WebView به‌صورت متن باز شده — برای ذخیره روی دیسک «ذخیره فایل» را بزنید.',
+        ),
+        duration: const Duration(seconds: 12),
+        action: SnackBarAction(
+          label: 'ذخیره فایل',
+          onPressed: () {
+            unawaited(
+              _saveWebViewDownload(
+                url: url!,
+                mimeType: 'text/csv',
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// توکن از WebView (تازه) + حافظه؛ ربات از همان سشن WebView درخواست می‌زند.
+  Future<String?> _ensureValidToken({bool tryWebExtract = true}) async {
+    if (tryWebExtract && _webController != null) {
+      _syncBotWebViewApi();
+      await _extractAndSaveToken(silent: true);
+    }
+    var token = await _readToken();
+    if (token.isNotEmpty && AsnafJwtPolicy.isExpired(token)) {
+      await _stateStore.clearJwt();
+      _appendLog('Stored JWT was expired — cleared.');
+      token = '';
+    }
+    if (token.isEmpty && tryWebExtract && _webController != null) {
+      await _extractAndSaveToken(silent: true);
+      token = await _readToken();
+    }
+    if (token.isEmpty) return null;
+    if (AsnafJwtPolicy.isExpired(token)) {
+      await _stateStore.clearJwt();
+      return null;
+    }
+    return token;
+  }
+
+  Future<void> _extractAndSaveToken({bool silent = false, String? pageUrl}) async {
+    final c = _webController;
+    if (c == null) return;
+    if (pageUrl != null && !AsnafJwtPolicy.isAuthenticatedPanelUrl(pageUrl)) {
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final raw = await c.evaluateJavascript(
+        source: AsnafJwtExtract.extractJavaScript,
+        contentWorld: ContentWorld.PAGE,
+      );
+      final token = AsnafJwtExtract.parseTokenFromJsResult(raw);
+      if (token == null || token.isEmpty) {
         _appendLog('JWT not found; login required.');
         setState(() => _operationStatus = 'منتظر لاگین به وب سایت');
         if (!silent && mounted) {
@@ -382,7 +704,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
               content: Text(
                 kIsWeb
                     ? 'ورود خودکار فقط در نسخه دسکتاپ فعال است.'
-                    : 'ابتدا در سایت لاگین کنید.',
+                    : 'پس از ورود کامل به پنل (خارج از صفحه login)، توکن ذخیره می‌شود.',
               ),
             ),
           );
@@ -390,7 +712,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         return;
       }
       await _stateStore.saveJwt(token);
-      _appendLog('JWT saved in hidden storage.');
+      _appendLog('JWT saved from WebView (authenticated panel).');
       setState(() => _operationStatus = 'لاگین انجام شد');
     } catch (e) {
       _appendLog('Token extract error: $e');
@@ -405,80 +727,47 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   }
 
   Future<void> _startFlow({required bool full}) async {
-    var token = await _readToken();
-    if (token.isEmpty) {
-      // Silent token extraction from the same page WebView.
-      await _extractAndSaveToken();
-      token = await _readToken();
-      if (token.isEmpty) return;
-    }
-
-    final meta = await _bot.fetchMeta(token);
-    final estimatedHours = (meta.totalCount / 300).toStringAsFixed(1);
-    if (!mounted) return;
-    final start = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(full ? 'بروزرسانی کامل اطلاعات' : 'بروزرسانی جدیدترین موارد'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('تعداد پرونده‌ها: ${meta.totalCount}'),
-            Text('مدت زمان تخمینی: حدود $estimatedHours ساعت'),
-            const SizedBox(height: 8),
-            const Text('توضیحات عملیات در نسخه بعدی تکمیل می‌شود.'),
-            if (!full) ...[
-              const SizedBox(height: 10),
-              Text(
-                'در این حالت فقط $_kAsnafLatestPagesWindow صفحهٔ آخر لیست پرونده‌ها از API پردازش می‌شود.',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-            if (full) ...[
-              const SizedBox(height: 12),
-              Text(
-                'با «تست ۵ پروندهٔ اول» همان مسیر کامل (جزئیات پرونده، اسناد و مختصات از روی آدرس) فقط برای پنج پروندهٔ ابتدای لیست اجرا می‌شود.',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')),
-          if (full)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, 'test_first_5'),
-              child: const Text('تست ۵ پروندهٔ اول'),
-            ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'start'),
-            child: const Text('شروع عملیات'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted || start == null) return;
-
-    if (start == 'test_first_5') {
-      await _runTestFirstFiveRecords(token: token, meta: meta);
+    if (!full) {
+      await _startLatestFlow();
       return;
     }
 
-    if (start != 'start') return;
+    final token = await _ensureValidToken();
+    if (token == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'توکن معتبر نیست. در WebView تا صفحهٔ پنل (بعد از login) بروید، سپس دوباره تلاش کنید.',
+          ),
+        ),
+      );
+      return;
+    }
+
+  if (!mounted) return;
+    final choice = await _showManualFullUpdateDialog();
+    if (!mounted || choice == null) return;
+
+    if (choice.isTestFirst5) {
+      await _openLiveOperationDialogThenRun(
+        sessionMode: 'test_first_5',
+        run: () => _runTestFirstFiveRecords(token: token),
+      );
+      return;
+    }
+
+    final planMeta = choice.metaOrNull;
+    if (planMeta == null) return;
 
     final warn = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('هشدار قبل از شروع'),
-        content: const Text(
-          'عملیات زمان‌بر است. تا پایان، پنجره برنامه و اینترنت را قطع نکنید.',
+        content: Text(
+          'بروزرسانی کامل ${planMeta.totalPages} صفحه (تخمین ${planMeta.totalCount} پرونده) '
+          'با فاصلهٔ تصادفی ۱۰–۲۰ ثانیه بین پرونده‌ها و استراحت ۳۰–۴۵ دقیقه هر ۳۰۰ پرونده انجام می‌شود.\n\n'
+          'تا پایان، پنجره برنامه و اینترنت را قطع نکنید.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('بازگشت')),
@@ -488,149 +777,175 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     );
     if (warn != true) return;
 
-    final recoveryMode = full ? 'full' : 'latest';
-    setState(() {
-      _operationStatus = full
-          ? 'عملیات بروز رسانی کامل اطلاعات در حال انجام است'
-          : 'عملیات بروز رسانی جدیدترین موارد در حال انجام است';
-      _processedCount = 0;
-      _failedCount = 0;
-      _sessionSkippedCount = 0;
-      _sessionNewSavedCount = 0;
-      _sessionDebtZeroSkipped = 0;
-      _currentRecord = 'شروع عملیات...';
-      _recoveryProgress.clear();
-      _paused = false;
-      _recoveryEndedAllowingSave = false;
-    });
-    if (!_dialogOpen) {
-      _dialogOpen = true;
-      unawaited(_showOperationDialog(recoveryMode: recoveryMode));
-    }
-    unawaited(_runRecovery(recoveryMode: recoveryMode, token: token, freshMeta: meta));
+    await _openLiveOperationDialogThenRun(
+      sessionMode: 'full',
+      planMeta: planMeta,
+      run: () => _runRecovery(
+        recoveryMode: 'full',
+        token: token,
+        planMeta: planMeta,
+      ),
+    );
   }
 
-  Future<void> _startDebtFlow() async {
-    var token = await _readToken();
-    if (token.isEmpty) {
-      await _extractAndSaveToken();
-      token = await _readToken();
-      if (token.isEmpty) return;
-    }
-
-    final meta = await _bot.fetchMeta(token);
-    final estimatedHours = (meta.totalCount / 600).toStringAsFixed(1);
-    if (!mounted) return;
-    final start = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('بروزرسانی بدهی پرونده‌ها'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('تعداد پرونده‌ها در لیست API: ${meta.totalCount}'),
-            Text('تخمین زمان (سبک‌تر از بروزرسانی کامل): حدود $estimatedHours ساعت'),
-            const SizedBox(height: 10),
-            Text(
-              'برای هر پرونده ابتدا بدهی از API بررسی می‌شود؛ اگر صفر باشد رد می‌شود. '
-              'فقط موارد با بدهی غیرصفر در «لیست موقت» ذخیره می‌شوند. '
-              'با «ذخیره در سرور»، اگر شناسه صنفی و code_co با پروندهٔ موجود یکی باشد فقط بدهی (money) به‌روز می‌شود؛ '
-              'اگر پرونده‌ای با آن شناسه صنفی در دیتابیس نباشد، همان رکورد به‌عنوان پروندهٔ جدید درج می‌شود.',
-              style: TextStyle(
-                fontSize: 12.5,
-                height: 1.35,
-                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              '«تست ۵ پروندهٔ دارای بدهی» تا پنج مورد با بدهی غیرصفر را از ابتدای لیست پیدا کرده و ذخیره می‌کند (بدون اسناد و ژئوکد).',
-              style: TextStyle(
-                fontSize: 12.5,
-                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'test_first_5_debt'),
-            child: const Text('تست ۵ پروندهٔ دارای بدهی'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'start'),
-            child: const Text('شروع عملیات'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted || start == null) return;
-
-    if (start == 'test_first_5_debt') {
-      await _runTestFirstFiveDebtRecords(token: token, meta: meta);
+  Future<void> _startLatestFlow() async {
+    final token = await _ensureValidToken();
+    if (token == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('توکن معتبر نیست. ابتدا در WebView لاگین کنید.')),
+      );
       return;
     }
-    if (start != 'start') return;
 
-    final warn = await showDialog<bool>(
+    if (!mounted) return;
+    final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('هشدار قبل از شروع'),
+        title: const Text('بروزرسانی جدیدترین موارد'),
         content: const Text(
-          'عملیات زمان‌بر است. تا پایان، پنجره برنامه و اینترنت را قطع نکنید.',
+          'فقط $_kAsnafLatestPagesWindow صفحهٔ آخر لیست (حدود ۱۰۰ پرونده) پردازش می‌شود.\n\n'
+          'تعداد کل پرونده‌ها از سرور دریافت نمی‌شود؛ پس از شروع، صفحهٔ پایانی از همان پاسخ لیست مشخص می‌شود.\n\n'
+          'تصاویر پروانه، پروفایل و همهٔ مدارک دانلود می‌شوند. '
+          'بین هر پرونده ۱۰–۲۰ ثانیه (تصادفی) و هر ۳۰۰ پرونده استراحت ۳۰–۴۵ دقیقه.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('بازگشت')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('تایید و شروع')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('انصراف')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('شروع')),
         ],
       ),
     );
-    if (warn != true) return;
+    if (ok != true) return;
 
-    setState(() {
-      _operationStatus = 'عملیات بروز رسانی بدهی پرونده‌ها در حال انجام است';
-      _processedCount = 0;
-      _failedCount = 0;
-      _sessionSkippedCount = 0;
-      _sessionNewSavedCount = 0;
-      _sessionDebtZeroSkipped = 0;
-      _currentRecord = 'شروع عملیات...';
-      _recoveryProgress.clear();
-      _paused = false;
-      _recoveryEndedAllowingSave = false;
-    });
-    if (!_dialogOpen) {
-      _dialogOpen = true;
-      unawaited(_showOperationDialog(recoveryMode: 'debt_full'));
+    await _openLiveOperationDialogThenRun(
+      sessionMode: 'latest',
+      run: () => _runRecovery(
+        recoveryMode: 'latest',
+        token: token,
+        discoverLatestPages: true,
+      ),
+    );
+  }
+
+  Future<_ManualFullUpdateChoice?> _showManualFullUpdateDialog() async {
+    final countCtrl = TextEditingController();
+    final pagesCtrl = TextEditingController();
+    try {
+      return await showDialog<_ManualFullUpdateChoice>(
+        context: context,
+        builder: (ctx) {
+          return StatefulBuilder(
+            builder: (ctx, setLocal) {
+              final count = int.tryParse(countCtrl.text.trim()) ?? 0;
+              final pages = int.tryParse(pagesCtrl.text.trim()) ?? 0;
+              final est = AsnafHumanPace.estimateHoursForCount(count);
+              return AlertDialog(
+                title: const Text('بروزرسانی کامل اطلاعات'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'تعداد پرونده و صفحات را دستی وارد کنید (فقط برای تخمین زمان در همین دیالوگ؛ '
+                        'هنگام فشردن دکمه درخواست شمارشی به سرور ارسال نمی‌شود).',
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: countCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'تعداد تقریبی پرونده‌ها',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setLocal(() {}),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: pagesCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'تعداد صفحات لیست API',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setLocal(() {}),
+                      ),
+                      if (count > 0) ...[
+                        const SizedBox(height: 10),
+                        Text('تخمین زمان (رفتار ایمن): حدود ${est.toStringAsFixed(1)} ساعت'),
+                      ],
+                      const SizedBox(height: 10),
+                      Text(
+                        'پس از شروع: فاصلهٔ ۱۰–۲۰ ثانیه بین پرونده‌ها، استراحت ۳۰–۴۵ دقیقه هر ۳۰۰ پرونده. '
+                        'عکس پروانه، تصویر شخص و همهٔ مدارک استخراج می‌شوند.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')),
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, const _ManualFullUpdateChoice.testFirst5()),
+                    child: const Text('تست ۵ پرونده'),
+                  ),
+                  FilledButton(
+                    onPressed: pages > 0
+                        ? () => Navigator.pop(
+                              ctx,
+                              _ManualFullUpdateChoice.start(
+                                AsnafMeta(totalCount: count > 0 ? count : pages * 20, totalPages: pages),
+                              ),
+                            )
+                        : null,
+                    child: const Text('شروع عملیات'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      countCtrl.dispose();
+      pagesCtrl.dispose();
     }
-    unawaited(_runRecovery(recoveryMode: 'debt_full', token: token, freshMeta: meta));
   }
 
   /// همان مسیر [buildDraftRecord] عملیات کامل (جزئیات، اسناد، ژئوکد) برای پنج پروندهٔ اول لیست API.
   Future<void> _runTestFirstFiveRecords({
     required String token,
-    required AsnafMeta meta,
   }) async {
-    setState(() {
-      _busy = true;
-      _operationStatus = 'در حال تست ۵ پروندهٔ اول...';
-    });
-    _appendLog('Test first 5 | totalPages=${meta.totalPages}');
     var ok = 0;
     var fail = 0;
     final entries = <AsnafFirstFiveTestEntry>[];
     final neshanOk = _bot.isNeshanGeocodingConfigured;
+    if (_offlineMode) {
+      _appendLog('خطا: حالت آفلاین — تست آنلاین غیرفعال است');
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _operationStatus = 'تست در حالت آفلاین ممکن نیست';
+        });
+      }
+      return;
+    }
     try {
-      final existing = await _draftStore.read();
-      final drafts = <ImportDraftRecord>[...existing];
       const target = 5;
       var collected = 0;
       var page = 1;
 
-      while (collected < target && page <= meta.totalPages) {
+      while (collected < target) {
+        _appendLog('دریافت لیست صفحه $page…');
+        setState(() => _operationStatus = 'دریافت لیست صفحه $page');
+        _pulseLiveUi();
         final rows = await _bot.fetchParvandehPage(token: token, page: page);
+        _appendLog('صفحه $page: ${rows.length} ردیف');
         if (rows.isEmpty) break;
         for (var i = 0; i < rows.length && collected < target; i++) {
           final row = rows[i] is Map ? rows[i] as Map : const {};
@@ -638,30 +953,50 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           if (id.isEmpty) continue;
           collected++;
           if (!mounted) return;
-          setState(() => _currentRecord = id);
+          setState(() {
+            _currentRecord = id;
+            _operationStatus = 'پردازش پرونده $id ($collected/$target)';
+          });
+          _pulseLiveUi();
+          _appendLog('── پرونده $collected/$target | id=$id ──');
+          _appendLog('دریافت جزئیات و مدارک…');
+          final sw = Stopwatch()..start();
           try {
             final record = await _bot.buildDraftRecord(
               token: token,
               codeCo: widget.codeCo,
               parvanehId: id,
               includeDocs: true,
-              geocodeIfMissing: true,
+              geocodeIfMissing: false,
             );
-            final idx = drafts.indexWhere((e) => e.clientTempId == id);
-            if (idx >= 0) {
-              drafts[idx] = record;
-            } else {
-              drafts.add(record);
-            }
-            await _draftStore.save(drafts);
+            _appendLog('ذخیره در حافظه و دانلود تصاویر…');
+            await _draftStore.upsert(record);
             ok++;
+            _processedCount = ok + fail;
+            _pushRecoveryProgress(id, 'ok', 'ذخیره شد — ${record.payload['name_store'] ?? ''}');
             entries.add(AsnafFirstFiveTestEntry.fromSuccess(record, neshanKeyConfigured: neshanOk));
-            _appendLog('Test first-5 OK id=$id');
+            _appendLog('✓ موفق id=$id');
+            _pulseLiveUi();
           } catch (e) {
             fail++;
+            _processedCount = ok + fail;
+            _failedCount = fail;
+            _pushRecoveryProgress(id, 'error', e.toString());
             entries.add(AsnafFirstFiveTestEntry.failure(id, e));
-            _appendLog('Test first-5 ERROR id=$id | $e');
+            _appendLog('✗ خطا id=$id | $e');
+            if (_isHardNetworkError(e)) {
+              setState(() => _operationStatus = 'timeout شبکه — استراحت قبل از ادامه');
+              _appendLog('⏸ استراحت ۱۰–۱۵ دقیقه پس از timeout…');
+              await AsnafHumanPace.instance.cooldownAfterHardNetworkError(
+                (m) {
+                  if (mounted) setState(() => _operationStatus = m);
+                  _appendLog(m);
+                },
+              );
+            }
           }
+          _appendLog('مکث ایمن ۱۰–۲۰ ثانیه…');
+          await AsnafHumanPace.instance.waitAfterParvande(sw);
         }
         page++;
       }
@@ -670,18 +1005,19 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         _appendLog('Test first 5: only $collected dossiers in API range (expected $target).');
       }
 
+      await _loadState();
       if (!mounted) return;
       setState(() {
         _operationStatus = fail == 0
             ? 'تست ۵ پروندهٔ اول موفق بود ($ok مورد)'
             : 'تست ۵ پروندهٔ اول: $ok موفق، $fail خطا';
-        _draftCount = drafts.length;
       });
+      _pulseLiveUi();
 
       final report = AsnafFirstFiveTestReport(
         savedAtMs: DateTime.now().millisecondsSinceEpoch,
-        metaTotalCount: meta.totalCount,
-        metaTotalPages: meta.totalPages,
+        metaTotalCount: 0,
+        metaTotalPages: 0,
         codeCo: widget.codeCo,
         unionName: widget.unionName,
         targetPlanned: target,
@@ -702,12 +1038,13 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       );
     } catch (e) {
       _appendLog('Test first 5 fatal: $e');
+      if (await _handleAsnafAuthFailure(e)) return;
       if (mounted) {
         setState(() => _operationStatus = 'خطا در تست ۵ پروندهٔ اول');
         final report = AsnafFirstFiveTestReport(
           savedAtMs: DateTime.now().millisecondsSinceEpoch,
-          metaTotalCount: meta.totalCount,
-          metaTotalPages: meta.totalPages,
+          metaTotalCount: 0,
+          metaTotalPages: 0,
           codeCo: widget.codeCo,
           unionName: widget.unionName,
           targetPlanned: 5,
@@ -728,408 +1065,108 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     } finally {
       if (mounted) {
         setState(() => _busy = false);
+        _pulseLiveUi();
         await _loadState();
         await _refreshFirstFiveTestReportFlag();
       }
     }
   }
 
-  /// تا ۵ پرونده با بدهی غیرصفر از ابتدای لیست (بدون اسناد و ژئوکد).
-  Future<void> _runTestFirstFiveDebtRecords({
-    required String token,
-    required AsnafMeta meta,
-  }) async {
-    setState(() {
-      _busy = true;
-      _operationStatus = 'در حال تست ۵ پروندهٔ دارای بدهی...';
-    });
-    _appendLog('Test first 5 debt | totalPages=${meta.totalPages}');
-    var ok = 0;
-    var fail = 0;
-    var skippedDebt = 0;
-    final entries = <AsnafFirstFiveTestEntry>[];
-    final neshanOk = _bot.isNeshanGeocodingConfigured;
-    try {
-      final existing = await _draftStore.read();
-      final drafts = <ImportDraftRecord>[...existing];
-      const targetSaved = 5;
-      var examined = 0;
-      var page = 1;
-
-      while (ok < targetSaved && page <= meta.totalPages) {
-        final rows = await _bot.fetchParvandehPage(token: token, page: page);
-        if (rows.isEmpty) break;
-        for (var i = 0; i < rows.length && ok < targetSaved; i++) {
-          final row = rows[i] is Map ? rows[i] as Map : const {};
-          final id = row['id']?.toString() ?? '';
-          if (id.isEmpty) continue;
-          examined++;
-          if (!mounted) return;
-          setState(() => _currentRecord = id);
-          try {
-            final record = await _bot.buildDebtOnlyDraftIfNonZeroDebt(
-              token: token,
-              codeCo: widget.codeCo,
-              parvanehId: id,
-            );
-            if (record == null) {
-              skippedDebt++;
-              entries.add(AsnafFirstFiveTestEntry.skippedDebtZero(id));
-              _appendLog('Test debt skip zero id=$id');
-            } else {
-              final idx = drafts.indexWhere((e) => e.clientTempId == id);
-              if (idx >= 0) {
-                drafts[idx] = record;
-              } else {
-                drafts.add(record);
-              }
-              await _draftStore.save(drafts);
-              ok++;
-              entries.add(AsnafFirstFiveTestEntry.fromSuccess(record, neshanKeyConfigured: neshanOk));
-              _appendLog('Test debt OK id=$id money=${record.payload['money']}');
-            }
-          } catch (e) {
-            fail++;
-            entries.add(AsnafFirstFiveTestEntry.failure(id, e));
-            _appendLog('Test debt ERROR id=$id | $e');
-          }
-        }
-        page++;
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _operationStatus = fail == 0
-            ? 'تست بدهی: $ok پرونده با بدهی ذخیره شد؛ $skippedDebt مورد بدهی صفر رد شد'
-            : 'تست بدهی: $ok موفق، $fail خطا؛ $skippedDebt بدهی صفر';
-        _draftCount = drafts.length;
-      });
-
-      final report = AsnafFirstFiveTestReport(
-        savedAtMs: DateTime.now().millisecondsSinceEpoch,
-        metaTotalCount: meta.totalCount,
-        metaTotalPages: meta.totalPages,
-        codeCo: widget.codeCo,
-        unionName: widget.unionName,
-        targetPlanned: targetSaved,
-        dossierSlotsFilled: examined,
-        entries: entries,
-        neshanKeyConfiguredWhenRun: neshanOk,
-        debtTestMode: true,
-      );
-      await _firstFiveTestReportStore.save(report);
-      if (!mounted) return;
-      setState(() => _hasSavedFirstFiveTestReport = true);
-      await _showFirstFiveTestReportSheet(report);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('گزارش تست بدهی ذخیره شد.'),
-          duration: Duration(seconds: 4),
-        ),
-      );
-    } catch (e) {
-      _appendLog('Test debt fatal: $e');
-      if (mounted) {
-        setState(() => _operationStatus = 'خطا در تست بدهی');
-        final report = AsnafFirstFiveTestReport(
-          savedAtMs: DateTime.now().millisecondsSinceEpoch,
-          metaTotalCount: meta.totalCount,
-          metaTotalPages: meta.totalPages,
-          codeCo: widget.codeCo,
-          unionName: widget.unionName,
-          targetPlanned: 5,
-          dossierSlotsFilled: entries.length,
-          entries: entries,
-          fatalError: e.toString(),
-          neshanKeyConfiguredWhenRun: neshanOk,
-          debtTestMode: true,
-        );
-        await _firstFiveTestReportStore.save(report);
-        if (!mounted) return;
-        setState(() => _hasSavedFirstFiveTestReport = true);
-        await _showFirstFiveTestReportSheet(report);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('خطا در تست بدهی: $e')),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _busy = false);
-        await _loadState();
-        await _refreshFirstFiveTestReportFlag();
-      }
-    }
-  }
-
-  Future<void> _showOperationDialog({required String recoveryMode}) async {
-    bool canResumeRecovery() {
-      final s = _operationStatus;
-      return s.contains('متوقف') || s.contains('خطا در عملیات');
-    }
+  Future<void> _showOperationDialog({required String sessionMode}) async {
+    final isTest = sessionMode == 'test_first_5' || sessionMode == 'test_first_5_debt';
+    final showRecoveryControls = !isTest && sessionMode != 'server_send';
 
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
-        final screenH = MediaQuery.of(ctx).size.height;
-        return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
-          child: SizedBox(
-            width: 660,
-            height: (screenH * 0.88).clamp(440.0, 920.0),
-            child: StatefulBuilder(
-              builder: (context, setLocal) {
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        switch (recoveryMode) {
-                          'full' => 'عملیات بروزرسانی کامل اطلاعات',
-                          'latest' => 'عملیات بروزرسانی جدیدترین موارد',
-                          'debt_full' => 'عملیات بروزرسانی بدهی پرونده‌ها',
-                          'debt_latest' => 'عملیات بروزرسانی بدهی پرونده‌ها',
-                          _ => 'عملیات',
-                        },
-                        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+        return AsnafLiveOperationDialog(
+          title: _sessionTitle(sessionMode),
+          readSnapshot: _readLiveSnapshot,
+          logScrollController: _liveLogScrollCtrl,
+          liveUiStream: _liveUiStream!.stream,
+          progressScrollController: _recoveryProgressScrollCtrl,
+          showDebtStats: sessionMode == 'debt_full' || sessionMode == 'debt_latest',
+          showRecoveryControls: showRecoveryControls,
+          onStopFull: (_busy && !_stopRequested)
+              ? () async {
+                  final ok = await showDialog<bool>(
+                    context: ctx,
+                    builder: (dCtx) => AlertDialog(
+                      title: const Text('توقف کامل عملیات'),
+                      content: const Text(
+                        'عملیات استخراج متوقف می‌شود. بعداً می‌توانید از «شروع مجدد» ادامه دهید.',
                       ),
-                      const SizedBox(height: 8),
-                      Expanded(
-                        child: StreamBuilder<int>(
-                          stream: Stream<int>.periodic(const Duration(milliseconds: 500), (i) => i),
-                          builder: (_, __) {
-                            final done = _processedCount + _failedCount;
-                            final progress = _totalCount > 0 ? (done / _totalCount).clamp(0.0, 1.0) : null;
-                            final remain = _totalCount > 0 ? (_totalCount - done).clamp(0, 1 << 30) : 0;
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('وضعیت: $_operationStatus', maxLines: 3),
-                                const SizedBox(height: 6),
-                                Text('پرونده جاری: $_currentRecord'),
-                                const SizedBox(height: 6),
-                                Text(
-                                  'مانده (تخمینی در برنامه): $remain | '
-                                  'پردازش‌شده: $done | خطا: $_failedCount',
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-
-
-                                  'این اجرا — جدید در موقت: $_sessionNewSavedCount | '
-                                  'ردشده (قبلاً در لیست): $_sessionSkippedCount'
-                                  '${recoveryMode == 'debt_full' || recoveryMode == 'debt_latest' ? ' | بدهی صفر (رد): $_sessionDebtZeroSkipped' : ''}',
-                                  style: TextStyle(
-                                    fontSize: 12.5,
-                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                LinearProgressIndicator(value: progress),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'پیشرفت پرونده‌ها (${_recoveryProgress.length})',
-                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                                ),
-                                const SizedBox(height: 6),
-                                Expanded(
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(color: Theme.of(context).dividerColor),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: _recoveryProgress.isEmpty
-                                        ? const Center(child: Text('هنوز ردیفی ثبت نشده است.'))
-                                        : ListView.builder(
-                                            controller: _recoveryProgressScrollCtrl,
-                                            padding: const EdgeInsets.symmetric(vertical: 4),
-                                            itemCount: _recoveryProgress.length,
-                                            itemBuilder: (_, i) {
-                                              final it = _recoveryProgress[i];
-                                              final icon = it.kind == 'error'
-                                                  ? Icons.error_outline
-                                                  : it.kind == 'skip'
-                                                      ? Icons.skip_next_outlined
-                                                      : Icons.check_circle_outline;
-                                              final color = it.kind == 'error'
-                                                  ? Theme.of(context).colorScheme.error
-                                                  : it.kind == 'skip'
-                                                      ? Theme.of(context).colorScheme.outline
-                                                      : Theme.of(context).colorScheme.primary;
-                                              return ListTile(
-                                                dense: true,
-                                                leading: Icon(icon, color: color, size: 22),
-                                                title: Text('شناسه ${it.id}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                                                subtitle: Text(
-                                                  it.subtitle,
-                                                  maxLines: 2,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                                onTap: () {
-                                                  showDialog<void>(
-                                                    context: context,
-                                                    builder: (dCtx) => AlertDialog(
-                                                      title: Text('جزئیات ${it.id}'),
-                                                      content: SingleChildScrollView(
-                                                        child: SelectableText(
-                                                          'وضعیت: ${it.kind == 'ok' ? 'ذخیره در موقت' : it.kind == 'skip' ? 'رد — از قبل در لیست' : 'خطا'}\n'
-                                                          '${it.subtitle}',
-                                                        ),
-                                                      ),
-                                                      actions: [
-                                                        TextButton(
-                                                          onPressed: () => Navigator.pop(dCtx),
-                                                          child: const Text('بستن'),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  );
-                                                },
-                                              );
-                                            },
-                                          ),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                SizedBox(
-                                  height: 72,
-                                  child: _logs.isEmpty
-                                      ? const Center(child: Text('لاگ فنی', style: TextStyle(fontSize: 11)))
-                                      : ListView.builder(
-                                          itemCount: _logs.length > 12 ? 12 : _logs.length,
-                                          itemBuilder: (_, i) => Text(
-                                            _logs[i],
-                                            style: const TextStyle(fontSize: 10.5),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                      const Divider(height: 16),
-                      Wrap(
-                        alignment: WrapAlignment.end,
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: [
-                          FilledButton.tonal(
-                            onPressed: (_busy && !_stopRequested)
-                                ? () async {
-                                    final ok = await showDialog<bool>(
-                                      context: context,
-                                      builder: (dCtx) => AlertDialog(
-                                        title: const Text('توقف کامل عملیات'),
-                                        content: const Text(
-                                          'عملیات استخراج متوقف می‌شود و از حالت در حال اجرا خارج می‌گردید.\n'
-                                          'می‌توانید بعداً با «شروع مجدد» از همان نقطهٔ ذخیره‌شده ادامه دهید.\n'
-                                          'آیا مطمئن هستید؟',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(dCtx, false),
-                                            child: const Text('خیر'),
-                                          ),
-                                          FilledButton(
-                                            onPressed: () => Navigator.pop(dCtx, true),
-                                            child: const Text('بله، توقف کامل'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (ok != true) return;
-                                    if (!mounted) return;
-                                    _paused = false;
-                                    _stopRequested = true;
-                                    setState(() => _operationStatus = 'در حال توقف کامل...');
-                                    setLocal(() {});
-                                  }
-                                : null,
-                            child: const Text('توقف کامل'),
-                          ),
-                          FilledButton.tonal(
-                            onPressed: (_busy && !_stopRequested && !_paused)
-                                ? () {
-                                    _paused = true;
-                                    setState(() => _operationStatus = 'متوقف موقت — برای ادامه «شروع مجدد» را بزنید');
-                                    setLocal(() {});
-                                  }
-                                : null,
-                            child: const Text('توقف موقت'),
-                          ),
-                          FilledButton.tonal(
-                            onPressed: ((_busy && _paused) || (!_busy && canResumeRecovery()))
-                                ? () async {
-                                    if (_busy && _paused) {
-                                      _paused = false;
-                                      setState(() => _operationStatus = 'ادامه پس از توقف موقت...');
-                                      setLocal(() {});
-                                      return;
-                                    }
-                                    final token = await _readToken();
-                                    if (token.isEmpty) return;
-                                    final meta = await _bot.fetchMeta(token);
-                                    if (!mounted) return;
-                                    setState(() => _operationStatus = 'شروع مجدد از آخرین پروندهٔ ذخیره‌شده');
-                                    unawaited(_runRecovery(recoveryMode: recoveryMode, token: token, freshMeta: meta));
-                                    setLocal(() {});
-                                  }
-                                : null,
-                            child: Text(_busy && _paused ? 'ادامه از توقف موقت' : 'شروع مجدد'),
-                          ),
-                          FilledButton.tonal(
-                            onPressed: () async {
-                              await _showDraftList();
-                              if (!mounted) return;
-                              setLocal(() {});
-                            },
-                            child: const Text('بررسی لیست'),
-                          ),
-                          FilledButton(
-                            onPressed: (!_busy &&
-                                    _recoveryEndedAllowingSave &&
-                                    _draftCount > 0)
-                                ? () async {
-                                    await _sendToServer();
-                                    if (!mounted) return;
-                                    setLocal(() {});
-                                  }
-                                : null,
-                            child: const Text('ذخیره اطلاعات'),
-                          ),
-                          TextButton(
-                            onPressed: _busy
-                                ? null
-                                : () {
-                                    _dialogOpen = false;
-                                    Navigator.pop(ctx);
-                                  },
-                            child: const Text('خروج'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(dCtx, false), child: const Text('خیر')),
+                        FilledButton(onPressed: () => Navigator.pop(dCtx, true), child: const Text('بله')),
+                      ],
+                    ),
+                  );
+                  if (ok != true) return;
+                  _paused = false;
+                  _stopRequested = true;
+                  setState(() => _operationStatus = 'در حال توقف کامل…');
+                  _appendLog('⏹ درخواست توقف کامل');
+                }
+              : null,
+          onPause: (_busy && !_stopRequested && !_paused)
+              ? () {
+                  _paused = true;
+                  setState(() => _operationStatus = 'متوقف موقت');
+                  _appendLog('⏸ توقف موقت');
+                }
+              : null,
+          onResume: ((_busy && _paused) || (!_busy && (_operationStatus.contains('متوقف') || _operationStatus.contains('خطا در عملیات'))))
+              ? () async {
+                  if (_busy && _paused) {
+                    _paused = false;
+                    setState(() => _operationStatus = 'ادامه پس از توقف موقت…');
+                    _appendLog('▶ ادامه از توقف موقت');
+                    return;
+                  }
+                  final token = await _readToken();
+                  if (token.isEmpty) return;
+                  final st = await _stateStore.readState();
+                  if (st == null || !mounted) return;
+                  setState(() => _operationStatus = 'شروع مجدد…');
+                  _appendLog('▶ شروع مجدد از checkpoint');
+                  unawaited(_runRecovery(
+                    recoveryMode: sessionMode,
+                    token: token,
+                    planMeta: AsnafMeta(
+                      totalCount: st.totalPlanned,
+                      totalPages: st.endPage,
+                    ),
+                  ));
+                }
+              : null,
+          onShowDraft: () async {
+            await _showDraftList();
+            if (!mounted) return;
+            _pulseLiveUi();
+          },
+          onSendToServer: (!_busy && _recoveryEndedAllowingSave && _pendingSendCount > 0)
+              ? () async {
+                  Navigator.pop(ctx);
+                  await Future<void>.delayed(Duration.zero);
+                  if (!mounted) return;
+                  await _sendToServer(confirmDialog: false);
+                }
+              : null,
+          onClose: () {
+            Navigator.pop(ctx);
+          },
         );
       },
     );
-    _dialogOpen = false;
   }
 
   Future<void> _runRecovery({
     required String recoveryMode,
     required String token,
-    required AsnafMeta freshMeta,
+    AsnafMeta? planMeta,
+    bool discoverLatestPages = false,
   }) async {
     var lastPersistedPage = 1;
     var lastPersistedIndexInPage = 0;
@@ -1143,26 +1180,68 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       _recoveryEndedAllowingSave = false;
     });
     _appendLog('Recovery started | mode=$recoveryMode');
+    var authBlocked = false;
+
+    if (_offlineMode) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('در حالت آفلاین استخراج از API اصناف غیرفعال است. سوئیچ را روی آنلاین بگذارید.'),
+        ),
+      );
+      return;
+    }
 
     try {
-      final totalPages = freshMeta.totalPages;
-      final startPage = fullWindow
-          ? 1
-          : (totalPages > _kAsnafLatestPagesWindow
-              ? totalPages - (_kAsnafLatestPagesWindow - 1)
-              : 1);
-      final endPage = totalPages;
       final currentState = await _stateStore.readState();
       final resume = currentState != null &&
           currentState.running &&
+          currentState.mode == recoveryMode;
+
+      late int startPage;
+      late int endPage;
+      late int totalCount;
+
+      if (resume) {
+        startPage = currentState.startPage;
+        endPage = currentState.endPage;
+        totalCount = currentState.totalPlanned;
+      } else if (discoverLatestPages) {
+        final first = await _bot.fetchParvandehPageWithMeta(token: token, page: 1);
+        final totalPages = first.meta.totalPages;
+        endPage = totalPages;
+        startPage = totalPages > _kAsnafLatestPagesWindow
+            ? totalPages - _kAsnafLatestPagesWindow + 1
+            : 1;
+        totalCount = (_kAsnafLatestPagesWindow * 20).clamp(1, first.meta.totalCount);
+        _appendLog('Latest window | pages $startPage..$endPage (discovered totalPages=$totalPages)');
+      } else if (planMeta != null) {
+        endPage = planMeta.totalPages;
+        startPage = fullWindow
+            ? 1
+            : (endPage > _kAsnafLatestPagesWindow ? endPage - _kAsnafLatestPagesWindow + 1 : 1);
+        totalCount = planMeta.totalCount;
+      } else {
+        throw StateError('Recovery requires planMeta or discoverLatestPages');
+      }
+
+      final resumeCheckpoint = !resume &&
+          currentState != null &&
           currentState.mode == recoveryMode &&
           currentState.startPage == startPage &&
-          currentState.endPage == endPage;
+          currentState.endPage == endPage &&
+          (currentState.currentPage > startPage ||
+              (currentState.currentPage == startPage && currentState.currentIndexInPage > 0));
       late int currentPage;
       late int currentIndex;
       late int processed;
       late int failed;
       if (resume) {
+        currentPage = currentState.currentPage;
+        currentIndex = currentState.currentIndexInPage;
+        processed = currentState.processedCount;
+        failed = currentState.failedCount;
+      } else if (resumeCheckpoint) {
         currentPage = currentState.currentPage;
         currentIndex = currentState.currentIndexInPage;
         processed = currentState.processedCount;
@@ -1177,6 +1256,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       lastPersistedPage = currentPage;
       lastPersistedIndexInPage = currentIndex;
 
+      if (!resume && !resumeCheckpoint) {
+        AsnafHumanPace.instance.resetSession();
+      }
+
       setState(() {
         _sessionSkippedCount = 0;
         _sessionNewSavedCount = 0;
@@ -1185,28 +1268,24 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         _failedCount = failed;
       });
 
-      final existing = await _draftStore.read();
-      final drafts = <ImportDraftRecord>[...existing];
-      final knownIds = existing.map((e) => e.clientTempId).toSet();
-
-      if (!debtOnly) {
-        _appendLog('Step 1: fetch raste list');
-        await _bot.fetchAllRaste(token);
-      }
-
-      final pageSpan = endPage - startPage + 1;
-      final estPerPage =
-          freshMeta.totalPages > 0 ? freshMeta.totalCount / freshMeta.totalPages : 0.0;
       setState(() {
-        _totalCount = fullWindow
-            ? freshMeta.totalCount
-            : (estPerPage * pageSpan).round().clamp(1, freshMeta.totalCount);
+        _totalCount = totalCount;
       });
 
       for (var page = currentPage; page <= endPage; page++) {
+        if (authBlocked) break;
         await _waitWhilePaused();
         if (_stopRequested) break;
-        final rows = await _bot.fetchParvandehPage(token: token, page: page);
+        List<dynamic> rows;
+        try {
+          rows = await _bot.fetchParvandehPage(token: token, page: page);
+        } catch (e) {
+          if (await _handleAsnafAuthFailure(e)) {
+            authBlocked = true;
+            break;
+          }
+          rethrow;
+        }
         _appendLog('Page $page loaded with ${rows.length} rows');
         final startIndex = (page == currentPage) ? currentIndex : 0;
         for (var i = startIndex; i < rows.length; i++) {
@@ -1216,35 +1295,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           final id = row['id']?.toString() ?? '';
           if (id.isEmpty) continue;
           setState(() => _currentRecord = id);
-          if (knownIds.contains(id)) {
-            processed++;
-            _processedCount = processed;
-            setState(() => _sessionSkippedCount++);
-            _pushRecoveryProgress(id, 'skip', 'قبلاً در لیست موقت بود — رد شد');
-            await _stateStore.saveState(
-              AsnafRecoveryState(
-                mode: recoveryMode,
-                startPage: startPage,
-                endPage: endPage,
-                currentPage: page,
-                currentIndexInPage: i + 1,
-                processedCount: processed,
-                failedCount: failed,
-                totalPlanned: _totalCount,
-                running: true,
-              ),
-            );
-            lastPersistedPage = page;
-            lastPersistedIndexInPage = i + 1;
-            if (!mounted) return;
-            setState(() {
-              _draftCount = drafts.length;
-              _processedCount = processed;
-              _failedCount = failed;
-            });
-            continue;
-          }
-
+          final sw = Stopwatch()..start();
           try {
             if (debtOnly) {
               final record = await _bot.buildDebtOnlyDraftIfNonZeroDebt(
@@ -1258,15 +1309,18 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                 setState(() => _sessionDebtZeroSkipped++);
                 _pushRecoveryProgress(id, 'skip', 'بدهی صفر یا نامشخص — رد شد');
               } else {
-                drafts.add(record);
-                knownIds.add(id);
-                await _draftStore.save(drafts);
-                setState(() => _sessionNewSavedCount++);
-                final m = record.payload['money'] ?? '';
-                _pushRecoveryProgress(id, 'ok', 'بدهی غیرصفر — ذخیره در موقت (مبلغ: $m)');
-                _appendLog('Debt record OK id=$id | drafts=${drafts.length}');
+                final up = await _draftStore.upsert(record, downloadImages: false);
+                if (up == UpsertResult.unchanged) {
+                  setState(() => _sessionSkippedCount++);
+                  _pushRecoveryProgress(id, 'skip', 'بدون تغییر — رد شد');
+                } else {
+                  setState(() => _sessionNewSavedCount++);
+                  final m = record.payload['money'] ?? '';
+                  _pushRecoveryProgress(id, 'ok', 'بدهی در حافظه ($m) — ${up.name}');
+                }
+                _appendLog('Debt record OK id=$id | upsert=$up');
               }
-              await Future<void>.delayed(const Duration(milliseconds: 400));
+              await Future<void>.delayed(AsnafFetchPace.current.pauseAfterDebtParvande);
             } else {
               final record = await _bot.buildDraftRecord(
                 token: token,
@@ -1275,21 +1329,45 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                 includeDocs: true,
                 geocodeIfMissing: true,
               );
-              drafts.add(record);
-              knownIds.add(id);
-              await _draftStore.save(drafts);
+              final up = await _draftStore.upsert(record);
               processed++;
               _processedCount = processed;
-              setState(() => _sessionNewSavedCount++);
-              _pushRecoveryProgress(id, 'ok', 'در لیست موقت ذخیره شد');
-              _appendLog('Record OK id=$id | drafts=${drafts.length}');
+              if (up == UpsertResult.unchanged) {
+                setState(() => _sessionSkippedCount++);
+                _pushRecoveryProgress(id, 'skip', 'بدون تغییر — رد شد');
+              } else {
+                setState(() => _sessionNewSavedCount++);
+                _pushRecoveryProgress(
+                  id,
+                  'ok',
+                  up == UpsertResult.updatedDirty
+                      ? 'بروزرسانی شد — نیاز به ارسال مجدد'
+                      : 'در حافظهٔ محلی ذخیره شد',
+                );
+              }
+              _appendLog('Record OK id=$id | upsert=$up');
+              await AsnafHumanPace.instance.waitAfterParvande(sw);
+              await AsnafHumanPace.instance.maybeLongRest(
+                processedCount: processed,
+                onStatus: (m) {
+                  if (mounted) setState(() => _operationStatus = m);
+                },
+                shouldAbort: () => _stopRequested,
+                waitWhilePaused: _waitWhilePaused,
+              );
             }
           } catch (e) {
+            if (await _handleAsnafAuthFailure(e)) {
+              authBlocked = true;
+              break;
+            }
             failed++;
             _failedCount = failed;
             _pushRecoveryProgress(id, 'error', e.toString());
             _appendLog('Record ERROR id=$id | $e');
           }
+
+          if (authBlocked) break;
 
           await _stateStore.saveState(
             AsnafRecoveryState(
@@ -1307,13 +1385,17 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           lastPersistedPage = page;
           lastPersistedIndexInPage = i + 1;
           if (!mounted) return;
+          await _loadState();
+          if (!mounted) return;
           setState(() {
-            _draftCount = drafts.length;
             _processedCount = processed;
             _failedCount = failed;
           });
         }
         currentIndex = 0;
+        if (!authBlocked) {
+          await Future<void>.delayed(AsnafFetchPace.current.pauseAfterListPage);
+        }
       }
 
       if (_stopRequested) {
@@ -1368,6 +1450,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           _paused = false;
           _recoveryEndedAllowingSave = true;
         });
+        _pulseLiveUi();
         await _loadState();
       }
     }
@@ -1380,12 +1463,14 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
     // شمارنده را قبل از شروع ارسال از منبع واقعی همگام می‌کنیم.
     await _loadState();
-    final records = await _draftStore.read();
+    final records = await _draftStore.readPendingForSync();
     if (!mounted) return;
     if (records.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لیست موقت خالی است.')),
+        const SnackBar(
+          content: Text('پرونده‌ای برای ارسال نیست (همه ارسال‌شده‌اند یا حافظه خالی است).'),
+        ),
       );
       return;
     }
@@ -1399,10 +1484,11 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           title: const Text('ارسال به سرور'),
           content: Text(
             debtOnlySession
-                ? 'تعداد ${records.length} رکورد بدهی ارسال شود؟\n\n'
-                    'اگر شناسه صنفی و code_co با پروندهٔ موجود یکی باشد فقط بدهی (money) به‌روز می‌شود؛ '
-                    'در غیر این صورت همان اطلاعات به‌عنوان پروندهٔ جدید در دیتابیس ذخیره می‌شود.'
-                : 'تعداد ${records.length} پرونده ارسال شود؟',
+                ? 'تعداد ${records.length} رکورد بدهی (ارسال‌نشده/نیاز به بروزرسانی) ارسال شود؟\n\n'
+                    'تصاویر محلی ابتدا آپلود و سپس داده در سرور ثبت می‌شود. رکوردها در حافظه باقی می‌مانند.'
+                : 'تعداد ${records.length} پرونده (ارسال‌نشده/نیاز به بروزرسانی) ارسال شود؟\n\n'
+                    'فقط فایل‌های فیزیکی موجود روی این دستگاه آپلود می‌شوند.\n'
+                    'هیچ دانلودی از سایت اصناف انجام نمی‌شود؛ مسیر تصاویر فقط از سرور شماست.',
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('انصراف')),
@@ -1414,66 +1500,57 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     }
     if (!mounted) return;
 
-    setState(() => _busy = true);
+    await _openLiveOperationDialogThenRun(
+      sessionMode: 'server_send',
+      planMeta: AsnafMeta(totalCount: records.length, totalPages: 0),
+      run: () => _executeServerSend(records),
+    );
+  }
+
+  Future<void> _executeServerSend(List<ImportDraftRecord> records) async {
     try {
-      setState(() => _operationStatus = 'در حال ذخیره اطلاعات در سرور');
-      final debtOnlySession =
-          records.every((r) => (r.payload['_import_mode'] ?? '').trim().toLowerCase() == 'debt_only');
-      final session = await _syncApi.startSession(
+      final result = await ParvandeServerSend.instance.sendAll(
         codeCo: widget.codeCo,
-        totalRecords: records.length,
-        debtSyncOnly: debtOnlySession,
+        records: records,
+        shouldStop: () => _stopRequested,
+        onProgress: (p) {
+          if (!mounted) return;
+          setState(() {
+            _operationStatus = p.message;
+            if (p.recordId != null && p.recordId!.isNotEmpty) {
+              _currentRecord = p.recordId!;
+            }
+            _processedCount = p.done;
+            _totalCount = p.total;
+          });
+          _appendLog(p.message);
+        },
       );
-      var remaining = <ImportDraftRecord>[...records];
-      final total = remaining.length;
-      var sent = 0;
-      for (var i = 0; i < total; i++) {
-        if (_stopRequested) break;
-        final r = remaining.first;
-        await _syncApi.uploadBatch(
-          sessionId: session.sessionId,
-          chunkIndex: i + 1,
-          totalChunks: total,
-          records: [r],
-        );
-        remaining.removeAt(0);
-        await _draftStore.save(remaining);
-        if (!mounted) return;
-        setState(() {
-          _draftCount = remaining.length;
-        });
-        sent += 1;
-        _appendLog('Sent id=${r.clientTempId} | remaining=${remaining.length}');
-      }
-      final fin = await _syncApi.finalizeSession(session.sessionId);
+
+      final fin = result.finalize;
+      final sent = result.sentRecords;
       _appendLog(
-        'Finalize done | parvande_inserted=${fin.inserted} skipped=${fin.skipped} | '
-        'docs_inserted=${fin.docsInserted} docs_attempts=${fin.docsRowAttempts} | '
-        'api_success=${fin.success} finalize_errors=${fin.failed}',
+        'نهایی‌سازی | پرونده=${fin.inserted} رد=${fin.skipped} | '
+        'سند=${fin.docsInserted} | خطا=${fin.failed}',
       );
       await _loadState();
-      setState(() => _operationStatus = 'ذخیره اطلاعات در سرور انجام شد');
       if (!mounted) return;
+      setState(() => _operationStatus = 'ارسال به سرور انجام شد');
+      _pulseLiveUi();
+
       if (sent == 0) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('هیچ رکوردی ارسال نشد. دوباره تلاش کنید.')),
+          const SnackBar(content: Text('هیچ رکوردی ارسال نشد.')),
         );
       } else {
         final buf = StringBuffer()
           ..writeln('ارسال $sent پرونده به سرور انجام شد.')
-          ..writeln(
-            'دیتابیس: ${fin.inserted} پرونده، ${fin.docsInserted} سند (tbl_doc_parvande).',
-          );
+          ..writeln('دیتابیس: ${fin.inserted} پرونده، ${fin.docsInserted} سند.');
         if (fin.skipped > 0) {
-          buf.writeln('پرونده رد شده (تکراری/موجود): ${fin.skipped}');
-        }
-        if (fin.inserted > 0 && fin.docsInserted < fin.inserted) {
-          buf.writeln(
-            'تعداد سند (${fin.docsInserted}) کمتر از پرونده‌های درج‌شده (${fin.inserted}) است؛ برای پرونده‌هایی که در سامانهٔ اصناف سندی ثبت نشده، API لیست خالی برمی‌گرداند.',
-          );
+          buf.writeln('رد شده (تکراری): ${fin.skipped}');
         }
         if (!fin.success && fin.failed > 0) {
-          buf.writeln('خطا در بخشی از نهایی‌سازی: ${fin.failed} — جزئیات در لاگ سرور.');
+          buf.writeln('خطا در نهایی‌سازی: ${fin.failed}');
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1483,38 +1560,53 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         );
       }
     } catch (e) {
-      _appendLog('Send to server error: $e');
-      setState(() => _operationStatus = 'خطا در ذخیره اطلاعات در سرور');
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطا در ارسال: $e')),
-      );
+      _appendLog('خطا در ارسال: $e');
+      if (mounted) {
+        setState(() => _operationStatus = 'خطا در ارسال به سرور');
+        _pulseLiveUi();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطا در ارسال: $e')),
+        );
+      }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+        _pulseLiveUi();
+        await _loadState();
+      }
     }
   }
 
   Future<void> _showDraftList() async {
-    final initial = await _draftStore.read();
+    if (!mounted) return;
+    var filter = SyncStatusFilter.all;
+    var records = await _draftStore.read(filter: filter);
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (ctx) {
-        var records = <ImportDraftRecord>[...initial];
         return StatefulBuilder(
-          builder: (context, setLocal) => SizedBox(
+          builder: (context, setLocal) {
+            Future<void> reload() async {
+              records = await _draftStore.read(filter: filter);
+              setLocal(() {});
+            }
+
+            final c = _syncCounts;
+            return SizedBox(
             height: MediaQuery.of(context).size.height * 0.86,
             child: Column(
               children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
                   child: Row(
                     children: [
                       Expanded(
                         child: Text(
-                          'لیست جاری (${records.length})',
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          'حافظه محلی (${records.length})'
+                          '${c != null ? ' · ارسال‌نشده:${c.local} · ارسال‌شده:${c.synced} · بروز:${c.dirty}' : ''}',
+                          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
                         ),
                       ),
                       TextButton.icon(
@@ -1544,20 +1636,40 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                                 records.clear();
                                 await _draftStore.clear();
                                 if (!mounted) return;
-                                setState(() => _draftCount = 0);
-                                setLocal(() {});
-                                _appendLog('Draft list cleared manually.');
+                                await _loadState();
+                                await reload();
+                                _appendLog('Local cache cleared manually.');
                               },
                         icon: const Icon(Icons.delete_sweep_outlined),
-                        label: const Text('خالی کردن لیست'),
+                        label: const Text('خالی کردن حافظه'),
                       ),
+                    ],
+                  ),
+                ),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Row(
+                    children: [
+                      for (final f in SyncStatusFilter.values)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: FilterChip(
+                            label: Text(_filterLabel(f)),
+                            selected: filter == f,
+                            onSelected: (_) async {
+                              filter = f;
+                              await reload();
+                            },
+                          ),
+                        ),
                     ],
                   ),
                 ),
                 const Divider(height: 1),
                 Expanded(
                   child: records.isEmpty
-                      ? const Center(child: Text('لیست موقت خالی است.'))
+                      ? const Center(child: Text('رکوردی با این فیلتر نیست.'))
                       : ListView.builder(
                           itemCount: records.length,
                           itemBuilder: (_, i) {
@@ -1567,16 +1679,18 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                                     .trim();
                             return ListTile(
                               title: Text(name.isEmpty ? '—' : name),
-                              subtitle: Text('ID: ${r.clientTempId}'),
+                              subtitle: Text(
+                                'ID: ${r.clientTempId} · ${_syncStatusLabel(r)}',
+                              ),
                               leading: IconButton(
                                 tooltip: 'ویرایش',
                                 onPressed: () async {
                                   final edited = await _editDraftRecord(r);
                                   if (edited == null) return;
-                                  records[i] = edited;
-                                  await _draftStore.save(records);
+                                  await _draftStore.updateAfterEdit(edited);
+                                  await reload();
                                   if (!mounted) return;
-                                  setState(() => _draftCount = records.length);
+                                  await _loadState();
                                   setLocal(() {});
                                   _appendLog('Draft edited id=${edited.clientTempId}');
                                 },
@@ -1585,10 +1699,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                               trailing: IconButton(
                                 tooltip: 'حذف',
                                 onPressed: () async {
-                                  records.removeAt(i);
-                                  await _draftStore.save(records);
+                                  await _draftStore.deleteRecord(r.clientTempId);
+                                  await reload();
                                   if (!mounted) return;
-                                  setState(() => _draftCount = records.length);
+                                  await _loadState();
                                   setLocal(() {});
                                 },
                                 icon: const Icon(Icons.delete_outline, color: Colors.red),
@@ -1615,11 +1729,19 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                 ),
               ],
             ),
-          ),
+          );
+          },
         );
       },
     );
   }
+
+  String _filterLabel(SyncStatusFilter f) => switch (f) {
+        SyncStatusFilter.all => 'همه',
+        SyncStatusFilter.pendingSend => 'ارسال‌نشده + بروز',
+        SyncStatusFilter.synced => 'ارسال‌شده',
+        SyncStatusFilter.dirty => 'نیاز ارسال مجدد',
+      };
 
   Future<ImportDraftRecord?> _editDraftRecord(ImportDraftRecord record) async {
     final payload = Map<String, String>.from(record.payload);
@@ -1670,11 +1792,19 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                     alignment: Alignment.centerRight,
                     child: FilledButton.tonalIcon(
                       onPressed: () async {
-                        final geo = await _bot.geocodeAddress(addressCtrl.text.trim());
+                        final geo = await AddressGeocodingService.instance.resolve(
+                          address: addressCtrl.text.trim(),
+                          state: payload['state_store'] ?? '',
+                          city: payload['city_store'] ?? '',
+                        );
                         if (geo == null) {
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('استخراج لوکیشن از آدرس ناموفق بود.')),
+                            const SnackBar(
+                              content: Text(
+                                'استخراج لوکیشن ناموفق بود یا مختصات خارج از محدوده استان است.',
+                              ),
+                            ),
                           );
                           return;
                         }
@@ -1747,16 +1877,16 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   }
 
   Widget _asnafToolbarSaveButton() {
-    final ready = _draftCount > 0 && !_busy;
+    final ready = _pendingSendCount > 0 && !_busy;
     return Padding(
       padding: const EdgeInsetsDirectional.only(end: 6),
       child: Tooltip(
-        message: 'ارسال لیست موقت به سرور اتحادیه',
+        message: 'ارسال پرونده‌های ارسال‌نشده/نیاز به بروزرسانی به سرور',
         child: FilledButton.icon(
           onPressed: ready ? () => unawaited(_sendToServer()) : null,
           icon: const Icon(Icons.cloud_upload_rounded, size: 18),
           label: Text(
-            _draftCount > 0 ? 'ذخیره ($_draftCount)' : 'ذخیره',
+            _pendingSendCount > 0 ? 'ارسال ($_pendingSendCount)' : 'ارسال',
             style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11),
           ),
           style: FilledButton.styleFrom(
@@ -1852,7 +1982,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                       _asnafToolbarAction(
                         label: 'جدیدترین‌ها',
                         icon: Icons.update_rounded,
-                        tooltip: 'فقط چند صفحهٔ آخر لیست API',
+                        tooltip: '۵ صفحهٔ آخر (~۱۰۰ پرونده)',
                         onPressed: _busy ? null : () => _startFlow(full: false),
                       ),
                       _asnafToolbarAction(
@@ -1860,13 +1990,6 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                         icon: Icons.sync_alt_rounded,
                         tooltip: 'جزئیات، اسناد و مختصات برای همهٔ صفحات',
                         onPressed: _busy ? null : () => _startFlow(full: true),
-                      ),
-                      _asnafToolbarAction(
-                        label: 'بروزرسانی بدهی',
-                        icon: Icons.account_balance_wallet_outlined,
-                        tooltip:
-                            'فقط پرونده‌های با بدهی غیرصفر در لیست موقت؛ در سرور: به‌روزرسانی بدهی با تطبیق شناسه صنفی، یا درج پروندهٔ جدید اگر در دیتابیس نبود',
-                        onPressed: _busy ? null : _startDebtFlow,
                       ),
                       _asnafToolbarSaveButton(),
                     ],
@@ -1905,7 +2028,66 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                         ),
                       ),
                     ),
+                    FutureBuilder<bool>(
+                      future: NetworkReachability.instance.isServerReachableCached(),
+                      builder: (context, snap) {
+                        final serverUp = snap.data ?? true;
+                        final lockedOffline = _offlineMode && !serverUp;
+                        return Tooltip(
+                          message: lockedOffline
+                              ? 'قطع اینترنت/سرور — آفلاین اجباری'
+                              : (_offlineMode
+                                  ? 'حالت آفلاین — فقط حافظه محلی'
+                                  : 'حالت آنلاین — استخراج از API'),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'آفلاین',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.white.withValues(alpha: 0.9),
+                                ),
+                              ),
+                              Switch(
+                                value: _offlineMode,
+                                onChanged: (_busy || lockedOffline) ? null : _toggleOfflineMode,
+                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                     const SizedBox(width: 4),
+                    IconButton(
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: EdgeInsets.zero,
+                      tooltip: 'تازه‌سازی توکن از WebView',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white.withValues(alpha: 0.18),
+                        foregroundColor: Colors.white,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: _busy || _webController == null
+                          ? null
+                          : () => _extractAndSaveToken(silent: false),
+                      icon: const Icon(Icons.key_outlined, size: 20),
+                    ),
+                    IconButton(
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: EdgeInsets.zero,
+                      tooltip: 'پاک کردن توکن JWT ذخیره‌شده',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white.withValues(alpha: 0.18),
+                        foregroundColor: Colors.white,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: _busy ? null : _clearStoredJwt,
+                      icon: const Icon(Icons.key_off_outlined, size: 20),
+                    ),
                     IconButton(
                       constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                       padding: EdgeInsets.zero,
@@ -1967,13 +2149,61 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                 initialSettings: InAppWebViewSettings(
                   javaScriptEnabled: true,
                   mediaPlaybackRequiresUserGesture: false,
+                  useOnDownloadStart: true,
+                  useShouldOverrideUrlLoading: true,
                 ),
-                onWebViewCreated: (controller) => _webController = controller,
-                onLoadStop: (controller, _) async {
-                  await _extractAndSaveToken(silent: true);
+                onWebViewCreated: (controller) {
+                  _webController = controller;
+                  _syncBotWebViewApi();
+                },
+                onDownloadStartRequest: (controller, request) {
+                  unawaited(
+                    _saveWebViewDownload(
+                      url: request.url,
+                      mimeType: request.mimeType,
+                      suggestedFilename: request.suggestedFilename,
+                      contentDisposition: request.contentDisposition,
+                    ),
+                  );
+                },
+                shouldOverrideUrlLoading: (controller, action) async {
+                  final url = action.request.url;
+                  if (url == null) {
+                    return NavigationActionPolicy.ALLOW;
+                  }
+                  final urlStr = url.toString();
+                  if (!AsnafWebViewDownload.looksLikeFileUrl(urlStr)) {
+                    return NavigationActionPolicy.ALLOW;
+                  }
+                  unawaited(
+                    _saveWebViewDownload(url: url),
+                  );
+                  return NavigationActionPolicy.CANCEL;
+                },
+                onLoadStop: (controller, url) async {
+                  _syncBotWebViewApi();
+                  await _extractAndSaveToken(
+                    silent: true,
+                    pageUrl: url?.toString(),
+                  );
+                  await _maybeOfferSaveCsvPage(controller, url);
                 },
               ),
       ),
     );
   }
+}
+
+class _ManualFullUpdateChoice {
+  const _ManualFullUpdateChoice._(this.action, this.meta);
+
+  const _ManualFullUpdateChoice.testFirst5() : this._('test_first_5', null);
+
+  const _ManualFullUpdateChoice.start(AsnafMeta m) : this._('start', m);
+
+  final String action;
+  final AsnafMeta? meta;
+
+  bool get isTestFirst5 => action == 'test_first_5';
+  AsnafMeta? get metaOrNull => meta;
 }

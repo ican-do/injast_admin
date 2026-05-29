@@ -4,7 +4,8 @@ import 'package:injast_admin/asnaf_login_desktop_page.dart';
 import 'package:injast_admin/import_sync/asnaf_bot_client.dart';
 import 'package:injast_admin/import_sync/import_draft_store.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
-import 'package:injast_admin/import_sync/import_sync_api.dart';
+import 'package:injast_admin/local_cache/offline_mode_prefs.dart';
+import 'package:injast_admin/local_cache/parvande_server_send.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class SettingsSyncPage extends StatefulWidget {
@@ -21,12 +22,14 @@ class SettingsSyncPage extends StatefulWidget {
 
 class _SettingsSyncPageState extends State<SettingsSyncPage> {
   final _bot = AsnafBotClient();
-  final _draftStore = ImportDraftStore();
-  final _syncApi = ImportSyncApi.instance;
+  late final ImportDraftStore _draftStore;
+  final _offlinePrefs = OfflineModePrefs();
   final _tokenCtrl = TextEditingController();
 
   bool _busy = false;
+  bool _offlineMode = false;
   int _draftCount = 0;
+  int _pendingSendCount = 0;
   int? _metaTotalCount;
   int? _metaTotalPages;
   String _recoveryMode = 'direct'; // direct | csv
@@ -40,6 +43,7 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
   @override
   void initState() {
     super.initState();
+    _draftStore = ImportDraftStore(widget.codeCo);
     _reloadDraftCount();
   }
 
@@ -50,9 +54,14 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
   }
 
   Future<void> _reloadDraftCount() async {
-    final records = await _draftStore.read();
+    final counts = await _draftStore.syncCounts();
+    final offline = await _offlinePrefs.isOffline(widget.codeCo);
     if (!mounted) return;
-    setState(() => _draftCount = records.length);
+    setState(() {
+      _draftCount = counts.total;
+      _pendingSendCount = counts.pendingSend;
+      _offlineMode = offline;
+    });
   }
 
   Future<void> _collectToDraft({
@@ -60,6 +69,12 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
     required int endPage,
     int? maxRecords,
   }) async {
+    if (_offlineMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('در حالت آفلاین استخراج از API غیرفعال است.')),
+      );
+      return;
+    }
     final token = _tokenCtrl.text.trim();
     if (token.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -103,11 +118,13 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
           });
         },
       );
-      await _draftStore.save(records);
+      for (final r in records) {
+        await _draftStore.upsert(r);
+      }
       await _reloadDraftCount();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${records.length} رکورد در حافظه موقت ذخیره شد.')),
+        SnackBar(content: Text('${records.length} رکورد در حافظهٔ محلی ذخیره شد (با تصاویر).')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -151,11 +168,11 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
   Future<void> _sendDraftToServer() async {
     setState(() => _busy = true);
     try {
-      final records = await _draftStore.read();
+      final records = await _draftStore.readPendingForSync();
       if (records.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('لیست موقت خالی است.')),
+          const SnackBar(content: Text('پرونده‌ای برای ارسال نیست.')),
         );
         return;
       }
@@ -164,7 +181,10 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('تایید ارسال'),
-          content: Text('تعداد ${records.length} رکورد به سرور ارسال شود؟'),
+          content: Text(
+            'تعداد ${records.length} پرونده (ارسال‌نشده/نیاز به بروزرسانی) به سرور ارسال شود؟\n'
+            'تصاویر محلی آپلود و در دیتابیس با URL سرور ثبت می‌شوند.',
+          ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('انصراف')),
             FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('تایید و ارسال')),
@@ -173,27 +193,11 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
       );
       if (confirmed != true) return;
 
-      const chunkSize = 40;
-      final chunks = <List<ImportDraftRecord>>[];
-      for (var i = 0; i < records.length; i += chunkSize) {
-        final end = (i + chunkSize < records.length) ? i + chunkSize : records.length;
-        chunks.add(records.sublist(i, end));
-      }
-
-      final session = await _syncApi.startSession(
+      final fin = (await ParvandeServerSend.instance.sendAll(
         codeCo: widget.codeCo,
-        totalRecords: records.length,
-      );
-      for (var i = 0; i < chunks.length; i++) {
-        await _syncApi.uploadBatch(
-          sessionId: session.sessionId,
-          chunkIndex: i + 1,
-          totalChunks: chunks.length,
-          records: chunks[i],
-        );
-      }
-      final fin = await _syncApi.finalizeSession(session.sessionId);
-      await _draftStore.clear();
+        records: records,
+      ))
+          .finalize;
       await _reloadDraftCount();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -501,12 +505,28 @@ class _SettingsSyncPageState extends State<SettingsSyncPage> {
                 const SizedBox(height: 10),
                 Text(
                   'کد اتحادیه: ${widget.codeCo}\n'
-                  'تعداد رکورد موقت: $_draftCount\n'
+                  'حافظه محلی: $_draftCount پرونده · در صف ارسال: $_pendingSendCount\n'
                   'متادیتا: ${_metaTotalCount ?? '-'} رکورد / ${_metaTotalPages ?? '-'} صفحه',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.black54, height: 1.8),
                 ),
-                const SizedBox(height: 18),
+                SwitchListTile(
+                  title: const Text('حالت آفلاین'),
+                  subtitle: Text(
+                    _offlineMode
+                        ? 'فقط مشاهده حافظه محلی — بدون API اصناف'
+                        : 'استخراج و بروزرسانی از API فعال است',
+                  ),
+                  value: _offlineMode,
+                  onChanged: _busy
+                      ? null
+                      : (v) async {
+                          await _offlinePrefs.setOffline(widget.codeCo, v);
+                          if (!mounted) return;
+                          setState(() => _offlineMode = v);
+                        },
+                ),
+                const SizedBox(height: 8),
                 SegmentedButton<String>(
                   segments: const [
                     ButtonSegment(

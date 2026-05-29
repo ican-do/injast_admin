@@ -26,7 +26,22 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>برای نمایش موقعیت فعلی شما روی نقشه بازرسی استفاده می‌شود.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>194.5.175.180</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
 </dict>
 </plist>

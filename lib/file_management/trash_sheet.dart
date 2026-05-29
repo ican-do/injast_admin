@@ -14,11 +14,13 @@ class TrashSheet extends StatefulWidget {
     required this.trashItems,
     required this.onRestore,
     required this.onHardDelete,
+    this.offline = false,
   });
 
   final List<Map<String, dynamic>> trashItems;
   final Future<bool> Function(Map<String, dynamic> p) onRestore;
   final Future<bool> Function(Map<String, dynamic> p) onHardDelete;
+  final bool offline;
 
   @override
   State<TrashSheet> createState() => _TrashSheetState();
@@ -68,12 +70,24 @@ class _TrashSheetState extends State<TrashSheet> {
 
   Future<void> _hardDelete(Map<String, dynamic> p) async {
     if (_busy) return;
+    if (widget.offline) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('حذف کامل فقط در حالت آنلاین امکان‌پذیر است.'),
+        ),
+      );
+      return;
+    }
     final ok = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, color: Color(0xFFB71C1C), size: 44),
         title: const Text('حذف دائم پرونده'),
         content: Text(
-            'آیا از حذف دائم پروندهٔ «${p.fullName}» مطمئن هستید؟ این عمل قابل بازگشت نیست.'),
+          'پروندهٔ «${p.fullName}» برای همیشه از سرور حذف می‌شود.\n'
+          'این عمل غیرقابل بازگشت است.',
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('انصراف')),
           FilledButton(

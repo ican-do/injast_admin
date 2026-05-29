@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AsnafRecoveryState {
@@ -58,8 +59,11 @@ class AsnafRecoveryStore {
   static const _kStateKey = 'asnaf_recovery_state_v1';
 
   Future<void> saveJwt(String token) async {
+    final t = token.trim();
+    if (t.isEmpty) return;
+    if (AsnafJwtPolicy.isExpired(t)) return;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kJwtKey, token.trim());
+    await prefs.setString(_kJwtKey, t);
   }
 
   Future<String> readJwt() async {

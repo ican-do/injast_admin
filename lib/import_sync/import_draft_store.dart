@@ -1,63 +1,59 @@
-import 'dart:convert';
-import 'dart:developer' show log;
-
 import 'package:injast_admin/import_sync/import_models.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:injast_admin/local_cache/parvande_local_db.dart';
+import 'package:injast_admin/local_cache/parvande_local_repository.dart';
+import 'package:injast_admin/local_cache/sync_status.dart';
 
+export 'package:injast_admin/local_cache/parvande_local_repository.dart'
+    show UpsertResult;
+export 'package:injast_admin/local_cache/parvande_local_db.dart'
+    show ParvandeSyncCounts;
+
+/// ذخیرهٔ محلی پرونده‌های یک اتحادیه (SQLite + وضعیت همگام‌سازی).
 class ImportDraftStore {
-  static const _kDraftKey = 'import_sync_draft_records_v1';
+  ImportDraftStore(this.codeCo);
 
-  Future<void> save(List<ImportDraftRecord> records) async {
-    final prefs = await SharedPreferences.getInstance();
-    final encoded = jsonEncode(records.map((e) => e.toJson()).toList());
-    await prefs.setString(_kDraftKey, encoded);
-    var totalDocRows = 0;
-    for (final r in records) {
-      final n = r.persistedDocsCount();
-      totalDocRows += n;
-      final jl = r.payload['_docs_json']?.length ?? 0;
-      log(
-        'stage=2_draft_local | parvaneh=${r.clientTempId} | parsed_list_len=$n | _docs_json_chars=$jl',
-        name: 'asnaf_import_docs',
-      );
-    }
-    log(
-      'stage=2_draft_local_summary | records=${records.length} | total_parsed_doc_rows=$totalDocRows',
-      name: 'asnaf_import_docs',
-    );
-  }
+  final String codeCo;
+  final _repo = ParvandeLocalRepository.instance;
 
-  /// خواندن پیش‌نویس از دیسک؛ لاگ `stage=2_draft_local_read` برای مقایسه با ذخیره.
-  Future<List<ImportDraftRecord>> read() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kDraftKey);
-    if (raw == null || raw.trim().isEmpty) return const [];
-    final decoded = jsonDecode(raw);
-    if (decoded is! List) return const [];
-    final list = decoded
-        .whereType<Map>()
-        .map((e) => ImportDraftRecord.fromJson(Map<String, dynamic>.from(e)))
-        .toList();
-    var totalDocRows = 0;
-    for (final r in list) {
-      final n = r.persistedDocsCount();
-      totalDocRows += n;
-      log(
-        'stage=2_draft_local_read | parvaneh=${r.clientTempId} | parsed_list_len=$n',
-        name: 'asnaf_import_docs',
-      );
-    }
-    if (list.isNotEmpty) {
-      log(
-        'stage=2_draft_local_read_summary | records=${list.length} | total_parsed_doc_rows=$totalDocRows',
-        name: 'asnaf_import_docs',
-      );
-    }
-    return list;
-  }
+  /// همهٔ پرونده‌های اتحادیه در حافظه.
+  Future<List<ImportDraftRecord>> read(
+          {SyncStatusFilter filter = SyncStatusFilter.all}) =>
+      _repo.readRecords(codeCo, filter: filter);
 
-  Future<void> clear() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_kDraftKey);
-  }
+  /// فقط پرونده‌هایی که باید به سرور ارسال شوند (local + dirty).
+  Future<List<ImportDraftRecord>> readPendingForSync() =>
+      _repo.readPendingForSync(codeCo);
+
+  Future<ParvandeSyncCounts> syncCounts() => _repo.counts(codeCo);
+
+  Future<void> save(List<ImportDraftRecord> records) =>
+      _repo.saveAllRecords(codeCo, records);
+
+  Future<UpsertResult> upsert(
+    ImportDraftRecord record, {
+    bool downloadImages = true,
+    bool fastMode = false,
+  }) =>
+      _repo.upsertFromImportRecord(
+        codeCo: codeCo,
+        record: record,
+        downloadImages: downloadImages,
+        fastMode: fastMode,
+      );
+
+  Future<void> updateAfterEdit(ImportDraftRecord record) =>
+      _repo.updatePayloadAfterEdit(codeCo: codeCo, record: record);
+
+  Future<void> markSynced(String clientTempId) =>
+      _repo.markSynced(codeCo, clientTempId);
+
+  Future<void> markSyncedBatch(Iterable<String> clientTempIds) =>
+      _repo.markSyncedBatch(codeCo, clientTempIds);
+
+  Future<void> clear() => _repo.clearUnion(codeCo);
+
+  Future<void> clearCompletely() => _repo.clearUnionCompletely(codeCo);
+
+  Future<void> deleteRecord(String clientTempId) =>
+      _repo.deleteRecord(codeCo, clientTempId);
 }

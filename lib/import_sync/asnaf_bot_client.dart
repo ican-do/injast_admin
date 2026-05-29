@@ -1,8 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' show log;
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:injast_admin/file_management/address_geocoding_service.dart';
+import 'package:injast_admin/import_sync/asnaf_api_throttle.dart';
+import 'package:injast_admin/import_sync/asnaf_fetch_pace.dart';
+import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
+import 'package:injast_admin/import_sync/asnaf_webview_api.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
 
 class AsnafMeta {
@@ -38,6 +44,9 @@ class AsnafCollectProgress {
 class AsnafBotClient {
   static const _base = 'https://apinovin.iranianasnaf.ir';
 
+  /// اگر ست شود، درخواست‌ها از داخل WebView (با کوکی همان سشن) زده می‌شوند.
+  AsnafWebViewApi? webViewApi;
+
   /// همان سرویس نشان بک‌اند (`test_address_2.js`). اگر `NESHAN_API_KEY` با
   /// `--dart-define` ست شود، همان مقدار جایگزین این پیش‌فرض می‌شود.
   static const _neshanApiKeyEmbedded = 'service.1c8e1ac2992643cfa931b8f52a6e0b39';
@@ -52,22 +61,8 @@ class AsnafBotClient {
   bool get isNeshanGeocodingConfigured => _neshanApiKey.trim().isNotEmpty;
 
   Future<AsnafMeta> fetchMeta(String token) async {
-    final first = await _getJson(
-      '$_base/parvaneh/?management=True&page=1',
-      token,
-      retryOn429: true,
-    );
-    final totalCount = _toInt(first['count']);
-    final explicitPages = _toInt(
-      (first is Map)
-          ? (first['total_pages'] ?? first['totalPages'] ?? first['num_pages'] ?? first['pages'])
-          : null,
-    );
-    final firstPageSize = _extractResults(first).length;
-    final safePageSize = firstPageSize > 0 ? firstPageSize : 20;
-    final fallbackPages = totalCount <= 0 ? 1 : ((totalCount + safePageSize - 1) ~/ safePageSize);
-    final totalPages = explicitPages > 0 ? explicitPages : fallbackPages;
-    return AsnafMeta(totalCount: totalCount, totalPages: totalPages);
+    final first = await fetchParvandehPageWithMeta(token: token, page: 1);
+    return first.meta;
   }
 
   Future<List<ImportDraftRecord>> collectRecords({
@@ -183,9 +178,9 @@ class AsnafBotClient {
             ),
           );
         }
-        await Future<void>.delayed(const Duration(milliseconds: 850));
+        await Future<void>.delayed(AsnafFetchPace.current.pauseAfterRecordInCollect);
       }
-      await Future<void>.delayed(const Duration(milliseconds: 1600));
+      await Future<void>.delayed(AsnafFetchPace.current.pauseAfterPageInCollect);
     }
 
     return out;
@@ -201,6 +196,38 @@ class AsnafBotClient {
       retryOn429: true,
     );
     return _extractResults(pageJson);
+  }
+
+  /// همان لیست صفحه به‌همراه `count` / تعداد صفحات (بدون endpoint جدا).
+  Future<({List<dynamic> rows, AsnafMeta meta})> fetchParvandehPageWithMeta({
+    required String token,
+    required int page,
+  }) async {
+    final pageJson = await _getJson(
+      '$_base/parvaneh/?management=True&page=$page',
+      token,
+      retryOn429: true,
+    );
+    final rows = _extractResults(pageJson);
+    final meta = _metaFromPageJson(pageJson, rows.length);
+    return (rows: rows, meta: meta);
+  }
+
+  AsnafMeta _metaFromPageJson(dynamic pageJson, int rowCountOnPage) {
+    final totalCount = _toInt((pageJson is Map) ? pageJson['count'] : 0);
+    final explicitPages = _toInt(
+      (pageJson is Map)
+          ? (pageJson['total_pages'] ??
+              pageJson['totalPages'] ??
+              pageJson['num_pages'] ??
+              pageJson['pages'])
+          : null,
+    );
+    final safePageSize = rowCountOnPage > 0 ? rowCountOnPage : 20;
+    final fallbackPages =
+        totalCount <= 0 ? 1 : ((totalCount + safePageSize - 1) ~/ safePageSize);
+    final totalPages = explicitPages > 0 ? explicitPages : fallbackPages;
+    return AsnafMeta(totalCount: totalCount, totalPages: totalPages);
   }
 
   /// پارس مقدار بدهی از API (رشته با ویرگول، ارقام فارسی، …).
@@ -253,6 +280,7 @@ class AsnafBotClient {
     final payload = _mapParvandePayload(detail, codeCo);
 
     if (includeDocs) {
+      await AsnafApiThrottle.instance.randomBetweenSteps();
       final docs = await _getJson(
         '$_base/docs/?parvaneh=$parvanehId&no_page=true',
         token,
@@ -278,11 +306,16 @@ class AsnafBotClient {
       final lat = payload['lat_store']?.trim() ?? '';
       final lon = payload['long_store']?.trim() ?? '';
       if (lat.isEmpty || lon.isEmpty) {
-        final geocoded = await geocodeAddress(payload['address_store'] ?? '');
+        final geocoded = await AddressGeocodingService.instance.resolve(
+          address: payload['address_store'] ?? '',
+          state: payload['state_store'] ?? '',
+          city: payload['city_store'] ?? '',
+        );
         if (geocoded != null) {
           payload['lat_store'] = geocoded.$1;
           payload['long_store'] = geocoded.$2;
         }
+        await AddressGeocodingService.instance.pauseBetweenImports();
       }
     }
 
@@ -310,6 +343,7 @@ class AsnafBotClient {
         });
       }
       if (rows.length < 50) break;
+      await Future<void>.delayed(AsnafFetchPace.current.pauseBetweenRastePages);
     }
     return out;
   }
@@ -322,14 +356,29 @@ class AsnafBotClient {
     final uri = Uri.parse(
       'https://api.neshan.org/v6/geocoding?address=${Uri.encodeQueryComponent(cleaned)}',
     );
-    final res = await http.get(uri, headers: {'Api-Key': key});
-    if (res.statusCode < 200 || res.statusCode >= 300) return null;
-    final json = jsonDecode(res.body);
-    if (json is! Map) return null;
-    final lat = _toStr(json['location']?['y']);
-    final lon = _toStr(json['location']?['x']);
-    if (lat.isEmpty || lon.isEmpty) return null;
-    return (lat, lon);
+
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        final res = await http
+            .get(uri, headers: {'Api-Key': key})
+            .timeout(const Duration(seconds: 15));
+        if (res.statusCode == 429 || res.statusCode == 503) {
+          await Future<void>.delayed(Duration(milliseconds: 800 * (attempt + 1)));
+          continue;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) return null;
+        final json = jsonDecode(res.body);
+        if (json is! Map) return null;
+        final lat = _toStr(json['location']?['y']);
+        final lon = _toStr(json['location']?['x']);
+        if (lat.isEmpty || lon.isEmpty) return null;
+        return (lat, lon);
+      } on TimeoutException {
+        if (attempt == 2) return null;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+    }
+    return null;
   }
 
   /// همان منطق `sanitizeAddress` در `test_address_2.js` (بک‌اند).
@@ -340,31 +389,80 @@ class AsnafBotClient {
         .trim();
   }
 
+  static const _requestTimeout = Duration(seconds: 50);
+
+  static bool _isRetryableNetwork(Object e) {
+    if (e is TimeoutException) return true;
+    if (e is SocketException) return true;
+    if (e is http.ClientException) {
+      final m = e.message.toLowerCase();
+      return m.contains('timeout') ||
+          m.contains('timed out') ||
+          m.contains('connection') ||
+          m.contains('socket');
+    }
+    return false;
+  }
+
   Future<dynamic> _getJson(
     String url,
     String token, {
     bool retryOn429 = false,
   }) async {
+    final viaWeb = webViewApi;
+    if (viaWeb != null) {
+      try {
+        return await viaWeb.getJson(url, token);
+      } on AsnafApiAuthException {
+        rethrow;
+      } catch (e) {
+        log(
+          'webview_api_fallback_http | url=$url | err=$e',
+          name: 'AsnafSite',
+        );
+      }
+    }
+
     var attempt = 0;
     while (true) {
       attempt++;
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {
-          'Authorization': 'JWT $token',
-          'Accept': 'application/json, text/plain, */*',
-          'Origin': 'https://iranianasnaf.ir',
-          'Referer': 'https://iranianasnaf.ir/',
-        },
-      );
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        return jsonDecode(res.body);
+      try {
+        await AsnafApiThrottle.instance.waitTurn();
+        final res = await http
+            .get(
+              Uri.parse(url),
+              headers: {
+                'Authorization': 'JWT $token',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
+                'Origin': 'https://iranianasnaf.ir',
+                'Referer': 'https://iranianasnaf.ir/panel/',
+                'User-Agent': AsnafJwtPolicy.browserUserAgent,
+              },
+            )
+            .timeout(_requestTimeout);
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          return jsonDecode(res.body);
+        }
+        if (res.statusCode == 401 || res.statusCode == 403) {
+          throw AsnafApiAuthException(res.statusCode, url);
+        }
+        if (retryOn429 && res.statusCode == 429 && attempt < 6) {
+          await AsnafApiThrottle.instance.backoff429(attempt);
+          continue;
+        }
+        throw Exception('API error ${res.statusCode} for $url');
+      } catch (e) {
+        if (_isRetryableNetwork(e) && attempt < 4) {
+          log(
+            'network_retry | attempt=$attempt | url=$url | err=$e',
+            name: 'AsnafSite',
+          );
+          await AsnafApiThrottle.instance.backoffNetworkError(attempt);
+          continue;
+        }
+        rethrow;
       }
-      if (retryOn429 && res.statusCode == 429 && attempt < 4) {
-        await Future<void>.delayed(Duration(seconds: attempt * 2));
-        continue;
-      }
-      throw Exception('API error ${res.statusCode} for $url');
     }
   }
 

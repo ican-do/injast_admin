@@ -10,26 +10,30 @@ class ParvandeDetailsDialog extends StatelessWidget {
     required this.onCall,
     required this.onSms,
     required this.onMap,
-    required this.onInspections,
+    required this.onNewInspection,
+    required this.onInspectionHistory,
     required this.onImages,
     required this.onLicense,
     required this.onDocuments,
     required this.onPartners,
     required this.onComplaint,
     required this.onEdit,
+    this.showEdit = true,
   });
 
   final Map<String, dynamic> parvande;
   final VoidCallback onCall;
   final VoidCallback onSms;
   final VoidCallback onMap;
-  final VoidCallback onInspections;
+  final VoidCallback onNewInspection;
+  final VoidCallback onInspectionHistory;
   final VoidCallback onImages;
   final VoidCallback onLicense;
   final VoidCallback onDocuments;
   final VoidCallback onPartners;
   final VoidCallback onComplaint;
   final VoidCallback onEdit;
+  final bool showEdit;
 
   static const _accent = Color(0xFF1E3A5F);
 
@@ -72,7 +76,7 @@ class ParvandeDetailsDialog extends StatelessWidget {
                       if (p.hasLocation) _row('مختصات', '${p.lat}, ${p.lng}'),
                     ]),
                     const SizedBox(height: 8),
-                    _opsBar(),
+                    _opsBar(context),
                   ],
                 ),
               ),
@@ -197,21 +201,50 @@ class ParvandeDetailsDialog extends StatelessWidget {
     );
   }
 
-  Widget _opsBar() {
+  Widget _opsBar(BuildContext context) {
     return Wrap(
       spacing: 6,
       runSpacing: 6,
       children: [
         _opBtn('تماس', FluentIcons.call_24_regular, onCall, const Color(0xFF2E7D32)),
         _opBtn('پیامک', FluentIcons.chat_24_regular, onSms, const Color(0xFF1565C0)),
-        _opBtn('نقشه', FluentIcons.location_24_regular, onMap, const Color(0xFFEF6C00)),
-        _opBtn('سوابق بازرسی', FluentIcons.clipboard_search_24_regular, onInspections, const Color(0xFF3949AB)),
-        _opBtn('تصاویر', FluentIcons.image_multiple_24_regular, onImages, const Color(0xFF7B1FA2)),
-        _opBtn('پروانه', FluentIcons.document_24_regular, onLicense, const Color(0xFF00695C)),
-        _opBtn('مدارک', FluentIcons.document_folder_24_regular, onDocuments, const Color(0xFF6D4C41)),
-        _opBtn('شریک', FluentIcons.people_team_24_regular, onPartners, const Color(0xFF455A64)),
-        _opBtn('ثبت شکایت', FluentIcons.warning_24_regular, onComplaint, const Color(0xFFD32F2F)),
-        _opBtn('ویرایش', FluentIcons.edit_24_regular, onEdit, const Color(0xFFEF6C00)),
+        _opBtn('نقشه', FluentIcons.location_24_regular, () {
+          Navigator.of(context).pop();
+          onMap();
+        }, const Color(0xFFEF6C00)),
+        _opBtn('بازرسی', FluentIcons.clipboard_pulse_24_regular, () {
+          Navigator.of(context).pop();
+          onNewInspection();
+        }, const Color(0xFF2E7D32)),
+        _opBtn('سوابق بازرسی', FluentIcons.clipboard_search_24_regular, () {
+          Navigator.of(context).pop();
+          onInspectionHistory();
+        }, const Color(0xFF3949AB)),
+        _opBtn('تصاویر', FluentIcons.image_multiple_24_regular, () {
+          Navigator.of(context).pop();
+          onImages();
+        }, const Color(0xFF7B1FA2)),
+        _opBtn('پروانه', FluentIcons.document_24_regular, () {
+          Navigator.of(context).pop();
+          onLicense();
+        }, const Color(0xFF00695C)),
+        _opBtn('مدارک', FluentIcons.document_folder_24_regular, () {
+          Navigator.of(context).pop();
+          onDocuments();
+        }, const Color(0xFF6D4C41)),
+        _opBtn('شریک', FluentIcons.people_team_24_regular, () {
+          Navigator.of(context).pop();
+          onPartners();
+        }, const Color(0xFF455A64)),
+        _opBtn('ثبت شکایت', FluentIcons.warning_24_regular, () {
+          Navigator.of(context).pop();
+          onComplaint();
+        }, const Color(0xFFD32F2F)),
+        if (showEdit)
+          _opBtn('ویرایش', FluentIcons.edit_24_regular, () {
+            Navigator.of(context).pop();
+            onEdit();
+          }, const Color(0xFFEF6C00)),
       ],
     );
   }
