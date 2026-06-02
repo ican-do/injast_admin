@@ -28,9 +28,74 @@ class HaghOzviatApi {
     if (body is! List) return const [];
     return body
         .whereType<Map>()
+        .map((e) {
+          final m = Map<String, dynamic>.from(e);
+          if ((m['shenase_store']?.toString().trim() ?? '').isEmpty) {
+            m['shenase_store'] = shenaseStore;
+          }
+          return HaghOzviatRow.fromServerJson(m);
+        })
+        .where((r) => r.shenaseStore.isNotEmpty)
+        .toList();
+  }
+
+  /// همهٔ ردیف‌های حق عضویت یک اتحادیه (برای گزارش‌گیری).
+  Future<List<HaghOzviatRow>> fetchAllRows(String codeCo) async {
+    final uri = Uri.parse(
+      getApiUrl(
+        'select/select_hagh_ozviat_all/${Uri.encodeComponent(codeCo)}',
+      ),
+    );
+    final res = await http.get(uri).timeout(const Duration(seconds: 180));
+    if (res.statusCode == 404) return const [];
+    if (res.statusCode != 200) {
+      throw Exception('خطا در دریافت گزارش حق عضویت (${res.statusCode})');
+    }
+    final body = jsonDecode(res.body);
+    if (body is! List) return const [];
+    return body
+        .whereType<Map>()
         .map((e) => HaghOzviatRow.fromServerJson(Map<String, dynamic>.from(e)))
         .where((r) => r.shenaseStore.isNotEmpty)
         .toList();
+  }
+
+  /// همهٔ ردیف‌ها: ابتدا bulk؛ در صورت نبود endpoint، از index + API تک‌عضو.
+  Future<List<HaghOzviatRow>> fetchAllRowsResolved(
+    String codeCo, {
+    void Function(int done, int total, String? shenase)? onProgress,
+  }) async {
+    final bulk = await fetchAllRows(codeCo);
+    if (bulk.isNotEmpty) return bulk;
+
+    final index = await fetchIndex(codeCo);
+    if (index.isEmpty) return const [];
+
+    final keys = index.entries
+        .where((e) => e.value.hasRecords)
+        .map((e) => e.key)
+        .toList();
+    if (keys.isEmpty) return const [];
+
+    const batchSize = 10;
+    final all = <HaghOzviatRow>[];
+    for (var i = 0; i < keys.length; i += batchSize) {
+      final batch = keys.skip(i).take(batchSize).toList();
+      final parts = await Future.wait(
+        batch.map(
+          (k) => fetchForMember(codeCo: codeCo, shenaseStore: k),
+        ),
+      );
+      for (final part in parts) {
+        all.addAll(part);
+      }
+      onProgress?.call(
+        (i + batch.length).clamp(0, keys.length),
+        keys.length,
+        batch.isEmpty ? null : batch.last,
+      );
+    }
+    return all;
   }
 
   /// خلاصهٔ حق عضویت همهٔ اعضای یک اتحادیه (برای کارت‌های پرونده).

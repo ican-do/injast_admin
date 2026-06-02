@@ -16,6 +16,7 @@ import 'package:injast_admin/local_cache/network_reachability.dart';
 import 'package:injast_admin/local_cache/offline_mode_prefs.dart';
 import 'package:injast_admin/local_cache/offline_session_store.dart';
 import 'package:injast_admin/pos_web_service.dart';
+import 'package:injast_admin/reports/hagh_ozviat_debt_reports_page.dart';
 import 'package:injast_admin/settings_sync_page.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shamsi_date/shamsi_date.dart';
@@ -308,7 +309,8 @@ class _PanelItemTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final featured = item.actionKey == 'inspection_map';
+    final featured = item.actionKey == 'inspection_map' ||
+        item.actionKey == 'hagh_ozviat_reports';
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(12),
@@ -410,6 +412,25 @@ class _PanelItemTile extends StatelessWidget {
               return;
             }
           }
+          if (item.actionKey == 'hagh_ozviat_reports') {
+            final codeCo = user?['code_co']?.toString().trim() ?? '';
+            if (codeCo.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('کد اتحادیه نامعتبر است.')),
+              );
+              return;
+            }
+            final unionName = user?['name_co']?.toString().trim() ?? '';
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => HaghOzviatDebtReportsPage(
+                  codeCo: codeCo,
+                  unionName: unionName,
+                ),
+              ),
+            );
+            return;
+          }
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('«${item.label}» به‌زودی فعال می‌شود.')),
           );
@@ -418,10 +439,12 @@ class _PanelItemTile extends StatelessWidget {
           decoration: BoxDecoration(
             color: featured ? null : item.backgroundColor,
             gradient: featured
-                ? const LinearGradient(
+                ? LinearGradient(
                     begin: Alignment.topRight,
                     end: Alignment.bottomLeft,
-                    colors: [Color(0xFF16314E), Color(0xFF2C5C86)],
+                    colors: item.actionKey == 'hagh_ozviat_reports'
+                        ? const [Color(0xFF4A148C), Color(0xFF283593)]
+                        : const [Color(0xFF16314E), Color(0xFF2C5C86)],
                   )
                 : null,
             borderRadius: BorderRadius.circular(12),
@@ -630,6 +653,20 @@ const List<_PanelCategory> _panelCategories = [
       //   _PanelItem(label: 'تنظیم اسامی پرسنل', icon: Icons.manage_accounts_outlined, backgroundColor: Color(0xFFFFF3E0), iconColor: Color(0xFFEF6C00)),
       //   _PanelItem(label: 'مدیریت نرخ‌نامه', icon: FluentIcons.receipt_24_regular, backgroundColor: Color(0xFFE0F2F1), iconColor: Color(0xFF00695C)),
       //   _PanelItem(label: 'تنظیمات', icon: FluentIcons.settings_24_regular, backgroundColor: Color(0xFFFFEBEE), iconColor: Color(0xFFC62828), actionKey: 'settings_menu'),
+    ],
+  ),
+  _PanelCategory(
+    title: 'گزارشات',
+    titleIcon: FluentIcons.chart_multiple_24_regular,
+    titleColor: Color(0xFF6A1B9A),
+    items: [
+      _PanelItem(
+        label: 'گزارش بدهی حق عضویت',
+        icon: FluentIcons.data_histogram_24_regular,
+        backgroundColor: Color(0xFFF3E5F5),
+        iconColor: Color(0xFF6A1B9A),
+        actionKey: 'hagh_ozviat_reports',
+      ),
     ],
   ),
   _PanelCategory(

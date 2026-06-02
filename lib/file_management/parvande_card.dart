@@ -468,65 +468,41 @@ class ParvandeCard extends StatelessWidget {
     return _membershipHasRecords ? _membershipActive : Colors.grey;
   }
 
-  Widget _membershipRowFullWidth() {
+  Widget _compactMembershipBtn() {
     final color = _membershipColor;
-    final idx = membershipIndex;
     final enabled = !membershipIndexLoaded || _membershipHasRecords;
 
     return Material(
-      color: color.withValues(alpha: enabled ? 0.1 : 0.06),
-      borderRadius: BorderRadius.circular(10),
+      color: color.withValues(alpha: enabled ? 0.08 : 0.04),
+      borderRadius: BorderRadius.circular(8),
       child: InkWell(
         onTap: enabled ? onMembership : null,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(8),
         child: Container(
-          width: double.infinity,
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          height: 34,
+          padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: color.withValues(alpha: enabled ? 0.35 : 0.2),
+              color: color.withValues(alpha: enabled ? 0.22 : 0.12),
             ),
           ),
-          child: Row(
+          child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(FluentIcons.wallet_24_regular, size: 18, color: color),
-              const SizedBox(width: 8),
+              Icon(FluentIcons.wallet_24_regular, size: 13, color: color),
               Text(
                 'حق عضویت',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 8.5,
+                  fontWeight: FontWeight.w700,
                   color: color,
+                  height: 1.05,
                 ),
               ),
-              if (enabled && idx != null && idx.hasPendingDebt) ...[
-                const SizedBox(width: 10),
-                Flexible(
-                  child: Text(
-                    'بدهی: ${_formatMoney(idx.pendingRial.toDouble())} ریال',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFFC62828),
-                    ),
-                  ),
-                ),
-              ] else if (membershipIndexLoaded && !_membershipHasRecords) ...[
-                const SizedBox(width: 8),
-                Text(
-                  '— بدون رکورد',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey.shade600,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
             ],
           ),
         ),
@@ -539,8 +515,6 @@ class ParvandeCard extends StatelessWidget {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _membershipRowFullWidth(),
-          const SizedBox(height: 6),
           _actionRow(5, [
             _compactBtn(
                 'جزئیات', FluentIcons.info_24_regular, onDetails, _accent),
@@ -550,7 +524,7 @@ class ParvandeCard extends StatelessWidget {
                 const Color(0xFF2E7D32)),
             _compactBtn('حذف دائم', FluentIcons.delete_dismiss_24_regular,
                 onHardDelete, const Color(0xFFB71C1C)),
-            null,
+            _compactMembershipBtn(),
           ]),
           const SizedBox(height: 3),
           _secondaryRow(),
@@ -561,8 +535,6 @@ class ParvandeCard extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _membershipRowFullWidth(),
-        const SizedBox(height: 6),
         _actionRow(6, [
           _compactBtn(
               'جزئیات', FluentIcons.info_24_regular, onDetails, _accent),
@@ -574,7 +546,7 @@ class ParvandeCard extends StatelessWidget {
               onNewInspection, const Color(0xFF2E7D32)),
           _compactBtn('سوابق', FluentIcons.clipboard_search_24_regular,
               onInspectionHistory, const Color(0xFF3949AB)),
-          null,
+          _compactMembershipBtn(),
         ]),
         const SizedBox(height: 3),
         _secondaryRow(),

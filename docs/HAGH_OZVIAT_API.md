@@ -83,7 +83,45 @@ GET /select/select_hagh_ozviat/{code_co}/{shenase_store}
 
 ---
 
-## ۲) همگام‌سازی پس از بارگذاری XLS
+## ۳) همهٔ ردیف‌های حق عضویت (گزارش‌گیری)
+
+```
+GET /select/select_hagh_ozviat_all/{code_co}
+```
+
+پاسخ JSON (آرایه — همان فیلدهای هر ردیف + `shenase_store`):
+
+```json
+[
+  {
+    "shenase_store": "0158702107",
+    "onvan": "پرداخت حق عضویت سال 1404",
+    "mablagh_rial": 18000000,
+    "sal": "1404",
+    "tarikh_ijad": "1405/02/06 , 10:27",
+    "noe_eblagh": "توسط کاربر",
+    "vaziyat": "در انتظار پرداخت",
+    "rade_sanfi": "رده ۱",
+    "onvan_raste": "خرده فروشی پوشاک زنانه"
+  }
+]
+```
+
+منطق سرور (خلاصه):
+
+```sql
+SELECT shenase_store, onvan, mablagh_rial, sal, tarikh_ijad,
+       noe_eblagh, vaziyat, rade_sanfi, onvan_raste
+FROM tbl_hagh_ozviat
+WHERE code_co = ?
+ORDER BY shenase_store, sal DESC, id DESC
+```
+
+اگر این endpoint روی سرور deploy نشده باشد، اپ گزارشات از `select_hagh_ozviat_index` (خلاصهٔ عضو) استفاده می‌کند.
+
+---
+
+## ۴) همگام‌سازی پس از بارگذاری XLS
 
 برای هر `shenase_store` در بدنه: **حذف همهٔ ردیف‌های قبلی** همان `(code_co, shenase_store)` و **درج ردیف‌های جدید**.
 

@@ -168,10 +168,10 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
       if (_selectedRaste != _allRasteFilter && item.raste != _selectedRaste) {
         return false;
       }
-      if (_selectedDebt == 'دارای بدهی' && _moneyValue(item) <= 0) {
+      if (_selectedDebt == 'دارای بدهی' && !_hasMemberDebt(item)) {
         return false;
       }
-      if (_selectedDebt == 'بدون بدهی' && _moneyValue(item) > 0) {
+      if (_selectedDebt == 'بدون بدهی' && _hasMemberDebt(item)) {
         return false;
       }
       if (_selectedStatus != _allStatusFilter &&
@@ -192,6 +192,18 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     final raw = item.s('money').replaceAll(',', '').trim();
     if (raw.isEmpty || raw.toLowerCase() == 'null') return 0;
     return double.tryParse(raw) ?? 0;
+  }
+
+  /// همان منطق کارت پرونده و دیالگ حق عضویت: `pending_rial` از index سرور.
+  bool _hasMemberDebt(Map<String, dynamic> item) {
+    if (_haghIndexLoaded) {
+      final idx = _haghFor(item);
+      if (idx != null && idx.hasRecords) {
+        return idx.hasPendingDebt;
+      }
+      return false;
+    }
+    return _moneyValue(item) > 0;
   }
 
   void _onFiltersChanged() {
@@ -1243,7 +1255,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
                   SizedBox(
                     width: itemWidth,
                     child: _filterDropdown(
-                      label: 'رسته',
+                      label: 'فیلتر رسته صنفی',
                       icon: FluentIcons.branch_24_regular,
                       value: _selectedRaste,
                       items: _rasteOptions,
@@ -1256,7 +1268,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
                   SizedBox(
                     width: itemWidth,
                     child: _filterDropdown(
-                      label: 'بدهی اعضا',
+                      label: 'فیلتر بدهی حق عضویت',
                       icon: FluentIcons.receipt_money_24_regular,
                       value: _selectedDebt,
                       items: const [
@@ -1264,6 +1276,11 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
                         'دارای بدهی',
                         'بدون بدهی',
                       ],
+                      itemLabels: const {
+                        _allDebtFilter: 'همه اعضا (بدون فیلتر)',
+                        'دارای بدهی': 'دارای بدهی (حق عضویت)',
+                        'بدون بدهی': 'بدون بدهی / تسویه',
+                      },
                       onChanged: (value) {
                         _selectedDebt = value ?? _allDebtFilter;
                         _onFiltersChanged();
@@ -1273,7 +1290,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
                   SizedBox(
                     width: itemWidth,
                     child: _filterDropdown(
-                      label: 'وضعیت پرونده',
+                      label: 'فیلتر وضعیت اعتبار پرونده',
                       icon: FluentIcons.clipboard_task_24_regular,
                       value: _selectedStatus,
                       items: _statusOptions,
@@ -1378,43 +1395,98 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     required String value,
     required List<String> items,
     required ValueChanged<String?> onChanged,
+    Map<String, String>? itemLabels,
   }) {
-    return DropdownButtonFormField<String>(
-      key: ValueKey('$label|$value'),
-      initialValue: items.contains(value) ? value : items.first,
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(
-          color: Color(0xFF36506E),
-          fontWeight: FontWeight.w700,
-        ),
-        prefixIcon: Icon(icon, size: 18, color: _accent),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide.none,
-        ),
-      ),
-      icon: const Icon(Icons.keyboard_arrow_down_rounded),
-      dropdownColor: Colors.white,
-      isExpanded: true,
-      items: items
-          .map(
-            (item) => DropdownMenuItem<String>(
-              value: item,
+    String captionFor(String item) => itemLabels?[item] ?? item;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 16, color: Colors.white.withValues(alpha: 0.92)),
+            const SizedBox(width: 6),
+            Expanded(
               child: Text(
-                item,
+                label,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 12.5, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.96),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                  height: 1.25,
+                ),
               ),
             ),
-          )
-          .toList(),
-      onChanged: onChanged,
+          ],
+        ),
+        const SizedBox(height: 6),
+        DropdownButtonFormField<String>(
+          key: ValueKey('$label|$value'),
+          initialValue: items.contains(value) ? value : items.first,
+          decoration: InputDecoration(
+            hintText: 'انتخاب کنید…',
+            hintStyle: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+            ),
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          style: const TextStyle(
+            color: Color(0xFF1E3A5F),
+            fontSize: 12.5,
+            fontWeight: FontWeight.w700,
+          ),
+          icon: const Icon(Icons.keyboard_arrow_down_rounded,
+              color: Color(0xFF1E3A5F)),
+          dropdownColor: Colors.white,
+          isExpanded: true,
+          selectedItemBuilder: (context) => items
+              .map(
+                (item) => Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    captionFor(item),
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1E3A5F),
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
+          items: items
+              .map(
+                (item) => DropdownMenuItem<String>(
+                  value: item,
+                  child: Text(
+                    captionFor(item),
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1E3A5F),
+                    ),
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: onChanged,
+        ),
+      ],
     );
   }
 
