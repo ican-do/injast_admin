@@ -43,7 +43,7 @@ jobs:
 
       - name: Upload build log (always)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-build-log
           path: dist/windows_build.log
@@ -73,7 +73,7 @@ jobs:
           Copy-Item -Force "dist/prerequisites/*" "$dest/prerequisites/"
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-build
           path: dist/injast_admin_windows/
