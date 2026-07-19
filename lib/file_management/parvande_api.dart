@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:injast_admin/local_cache/sync_status.dart';
@@ -171,11 +172,16 @@ class ParvandeApi {
   }
 
   /// بروزرسانی پرونده — همان updateParvandeh سرور
-  Future<void> updateParvandeh(
+  Future<ParvandeUpdateResult> updateParvandeh(
     Map<String, dynamic> parvande, {
     Map<String, String>? overrides,
+    bool verboseLog = false,
   }) async {
-    await _updateParvandeOnServer(parvande, overrides: overrides);
+    return _updateParvandeOnServer(
+      parvande,
+      overrides: overrides,
+      verboseLog: verboseLog,
+    );
   }
 
   /// بروزرسانی سریع: موبایل، تلفن، بدهی
@@ -184,8 +190,8 @@ class ParvandeApi {
     required String mobAdmin,
     required String telAdmin,
     required String money,
-  }) {
-    return updateParvandeh(
+  }) async {
+    await updateParvandeh(
       parvande,
       overrides: {
         'mob_admin': mobAdmin.trim(),
@@ -231,12 +237,13 @@ class ParvandeApi {
     );
   }
 
-  Future<void> _updateParvandeOnServer(
+  Future<ParvandeUpdateResult> _updateParvandeOnServer(
     Map<String, dynamic> p, {
     String? address,
     String? lat,
     String? lng,
     Map<String, String>? overrides,
+    bool verboseLog = false,
   }) async {
     String v(String key) {
       final o = overrides?[key];
@@ -290,7 +297,23 @@ class ParvandeApi {
 
     final uri =
         Uri.parse(getApiUrl('update/update_parvandeh/${parts.join('/')}'));
+    if (verboseLog) {
+      debugPrint(
+        '[csv_import_update] HTTP GET update_parvandeh | '
+        'id=${p.idParvandeh} | shenase=${v('shenase_store')} | '
+        'date_sodor=${v('date_sodor_store')} | '
+        'vaziyat=${v('vaziyat_store')}/${v('lbl_vaziyat_store')} | '
+        'date_exp=${v('date_exp_store')}',
+      );
+      debugPrint('[csv_import_update] URL: $uri');
+    }
     final res = await http.get(uri).timeout(const Duration(seconds: 120));
+    if (verboseLog) {
+      debugPrint(
+        '[csv_import_update] HTTP RESP ${res.statusCode} | '
+        'body=${res.body.length > 200 ? '${res.body.substring(0, 200)}…' : res.body}',
+      );
+    }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception(
         res.body.trim().isNotEmpty
@@ -302,12 +325,31 @@ class ParvandeApi {
     if (body.contains('error') || body.contains('fail')) {
       throw Exception('خطا در ذخیره پرونده: ${res.body}');
     }
+    return ParvandeUpdateResult(
+      statusCode: res.statusCode,
+      body: res.body.trim(),
+      requestUri: uri.toString(),
+    );
   }
 
   String _pathParam(String value) {
-    final t = value.trim();
+    // `/` در path باعث شکستن پارامترها می‌شود (تاریخ شمسی، آدرس، برچسب وضعیت).
+    // `%2F` هم روی بعضی سرورهای جاوا قبول نمی‌شود — به `-` تبدیل می‌کنیم.
+    final t = value.trim().replaceAll('/', '-');
     return t.isEmpty ? '0' : Uri.encodeComponent(t);
   }
+}
+
+class ParvandeUpdateResult {
+  const ParvandeUpdateResult({
+    required this.statusCode,
+    required this.body,
+    required this.requestUri,
+  });
+
+  final int statusCode;
+  final String body;
+  final String requestUri;
 }
 
 class ParvandeLocationEditor {

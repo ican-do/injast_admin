@@ -13,6 +13,17 @@ void main() {
     );
   });
 
+  test('computeExpJalaliPathSafe = صدور + ۵ سال شمسی', () {
+    expect(
+      CsvParvandeDates.computeExpJalaliPathSafe('1403/12/02 , 00:00'),
+      '1408-12-02',
+    );
+    expect(
+      CsvParvandeDates.computeExpJalaliPathSafe('1408/12/02'),
+      '1413-12-02',
+    );
+  });
+
   test('normalize education and ownership', () {
     expect(CsvImportLabels.normalizeEducation('سیکل'), 'سیکل');
     expect(CsvImportLabels.normalizeOwnership('مالک'), 'مالک');

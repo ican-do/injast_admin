@@ -1,4 +1,5 @@
 import 'package:injast_admin/file_management/jalali_date_util.dart';
+import 'package:shamsi_date/shamsi_date.dart';
 
 /// محاسبهٔ `date_exp_store` از تاریخ صدور و وضعیت «اعتبار» در CSV اصناف.
 /// `date_etebar_store` در import CSV عمداً خالی می‌ماند.
@@ -20,6 +21,20 @@ class CsvParvandeDates {
 
     final exp = DateTime(issue.year + years, issue.month, issue.day);
     return JalaliDateUtil.formatGregorian(exp);
+  }
+
+  /// تاریخ انقضا برای به‌روزرسانی CSV: صدور شمسی + [years] سال → `YYYY-MM-DD` path-safe.
+  static String computeExpJalaliPathSafe(
+    String? issueDateRaw, {
+    int years = 5,
+  }) {
+    final j = JalaliDateUtil.parse(issueDateRaw);
+    if (j == null || years <= 0) return '';
+    final targetYear = j.year + years;
+    final monthLen = Jalali(targetYear, j.month, 1).monthLength;
+    final day = j.day > monthLen ? monthLen : j.day;
+    final exp = Jalali(targetYear, j.month, day);
+    return '${exp.year}-${exp.month.toString().padLeft(2, '0')}-${exp.day.toString().padLeft(2, '0')}';
   }
 
   static int _yearsForCsvValidity(String validity) {

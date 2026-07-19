@@ -332,6 +332,24 @@ class _HaghOzviatDebtReportsPageState extends State<HaghOzviatDebtReportsPage> {
     });
   }
 
+  void _backToHome() {
+    Navigator.of(context).pop();
+  }
+
+  PreferredSizeWidget _homeAppBar({String? title}) {
+    return AppBar(
+      backgroundColor: _accent2,
+      foregroundColor: Colors.white,
+      elevation: 0,
+      leading: IconButton(
+        tooltip: 'برگشت به صفحه اصلی',
+        onPressed: _backToHome,
+        icon: const Icon(Icons.home_outlined),
+      ),
+      title: Text(title ?? 'گزارش بدهی حق عضویت'),
+    );
+  }
+
   Future<void> _pickDate({required bool isFrom}) async {
     final current = isFrom ? _filters.dateFrom : _filters.dateTo;
     final initial = current?.toDateTime() ?? DateTime.now();
@@ -350,8 +368,12 @@ class _HaghOzviatDebtReportsPageState extends State<HaghOzviatDebtReportsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final showSimpleAppBar =
+        _loading || (_error != null && _rows.isEmpty && _index.isEmpty);
+
     return Scaffold(
       backgroundColor: _bg,
+      appBar: showSimpleAppBar ? _homeAppBar() : null,
       body: _loading
           ? Center(
               child: Column(
@@ -447,6 +469,12 @@ class _HaghOzviatDebtReportsPageState extends State<HaghOzviatDebtReportsPage> {
               icon: const Icon(Icons.refresh),
               label: const Text('تلاش مجدد'),
             ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _backToHome,
+              icon: const Icon(Icons.home_outlined),
+              label: const Text('برگشت به صفحه اصلی'),
+            ),
           ],
         ),
       ),
@@ -460,6 +488,12 @@ class _HaghOzviatDebtReportsPageState extends State<HaghOzviatDebtReportsPage> {
       pinned: true,
       backgroundColor: _accent2,
       foregroundColor: Colors.white,
+      automaticallyImplyLeading: false,
+      leading: IconButton(
+        tooltip: 'برگشت به صفحه اصلی',
+        onPressed: _backToHome,
+        icon: const Icon(Icons.home_outlined),
+      ),
       flexibleSpace: FlexibleSpaceBar(
         background: Container(
           decoration: const BoxDecoration(

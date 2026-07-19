@@ -94,18 +94,23 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
                 _infoTile('تعداد پرونده در فایل', '${analysis.totalRows}'),
                 _infoTile('تعداد ستون‌ها', '${analysis.columnCount}'),
                 _infoTile(
-                  'قابل ثبت (پس از حذف تکراری)',
+                  'قابل پردازش (پس از حذف تکراری)',
                   '${analysis.importableCount}',
                 ),
-                if (analysis.duplicateOnServerCount > 0)
+                if (analysis.insertOnServerCount > 0)
                   _infoTile(
-                    'تکراری با سرور (کد صنفی)',
-                    '${analysis.duplicateOnServerCount}',
-                    color: Colors.orange.shade800,
+                    'ثبت جدید روی سرور',
+                    '${analysis.insertOnServerCount}',
+                  ),
+                if (analysis.updateOnServerCount > 0)
+                  _infoTile(
+                    'به‌روزرسانی وضعیت/تاریخ صدور',
+                    '${analysis.updateOnServerCount}',
+                    color: Colors.blue.shade800,
                   ),
                 if (analysis.duplicateInFileCount > 0)
                   _infoTile(
-                    'تکراری درون فایل (کد صنفی)',
+                    'حذف‌شده به‌عنوان تکراری در فایل',
                     '${analysis.duplicateInFileCount}',
                     color: Colors.orange.shade800,
                   ),
@@ -156,28 +161,24 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
               if (_result != null) ...[
                 const SizedBox(height: 12),
                 _infoTile('ثبت‌شده در سرور (جدید)', '${_result!.finalize.inserted}'),
-                _infoTile(
-                  'رد شده — تکراری در سرور',
-                  '${_result!.finalize.skipped}',
-                  color: _result!.finalize.skipped > 0 &&
-                          _result!.finalize.inserted == 0
-                      ? Colors.orange.shade800
-                      : null,
-                ),
-                if (_result!.finalize.skipped > 0 &&
-                    _result!.finalize.inserted == 0) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    'اگر inserted=0 بود: id_parvandeh باید عددی باشد (اصلاح شد). '
-                    'در SQL هم id_parvandeh=431350066 و هم shenase_store=0431350066 '
-                    'را با code_co امتحان کنید.',
-                    style: TextStyle(
-                      color: Colors.blue.shade900,
-                      height: 1.6,
-                      fontSize: 12.5,
-                    ),
+                if (_result!.updatedCount > 0)
+                  _infoTile(
+                    'به‌روزرسانی وضعیت/تاریخ',
+                    '${_result!.updatedCount}',
+                    color: Colors.blue.shade800,
                   ),
-                ],
+                if (_result!.updateFailures > 0)
+                  _infoTile(
+                    'خطا در به‌روزرسانی',
+                    '${_result!.updateFailures}',
+                    color: Colors.red.shade700,
+                  ),
+                if (_result!.finalize.skipped > 0)
+                  _infoTile(
+                    'رد شده در ثبت جدید',
+                    '${_result!.finalize.skipped}',
+                    color: Colors.orange.shade800,
+                  ),
                 if (_result!.geocodeFailures > 0)
                   _infoTile(
                     'بدون موقعیت (map.ir/نشان)',
@@ -374,8 +375,9 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
         _phase = _Phase.done;
         _statusMessage =
             'تست پایان یافت — ثبت: ${result.finalize.inserted}، '
+            'به‌روزرسانی: ${result.updatedCount}، '
             'رد: ${result.finalize.skipped}، '
-            'خطا: ${result.finalize.failed}. '
+            'خطا: ${result.finalize.failed + result.updateFailures}. '
             'لاگ: csv_import_test';
       });
     } catch (e, st) {
@@ -399,12 +401,16 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
       _cancelRequested = false;
       _error = null;
       _result = null;
-      _statusMessage = 'در حال ثبت ${rows.length} پرونده روی سرور...';
+      _statusMessage =
+          'در حال پردازش ${rows.length} پرونده '
+          '(جدید: ${analysis.insertOnServerCount}، '
+          'به‌روزرسانی: ${analysis.updateOnServerCount})...';
     });
 
     try {
       final result = await _service.runImport(
         rows: rows,
+        serverByShenase: analysis.serverByShenase,
         shouldStop: () => _cancelRequested,
         onProgress: (p) {
           if (!mounted) return;
@@ -421,7 +427,10 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
         _phase = _Phase.done;
         _statusMessage = result.stoppedEarly
             ? 'عملیات توسط کاربر متوقف شد.'
-            : 'عملیات با موفقیت پایان یافت.';
+            : 'عملیات پایان یافت — ثبت جدید: ${result.finalize.inserted}، '
+                'به‌روزرسانی: ${result.updatedCount}'
+                '${result.updateFailures > 0 ? '، خطا: ${result.updateFailures}' : ''}. '
+                'لاگ: csv_import_update';
       });
     } catch (e) {
       if (!mounted) return;

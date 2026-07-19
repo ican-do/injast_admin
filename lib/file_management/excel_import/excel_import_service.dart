@@ -1,9 +1,10 @@
 import 'dart:convert';
 import 'dart:developer' show log;
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_columns.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_models.dart';
+import 'package:injast_admin/file_management/excel_import/csv_import_dedupe.dart';
 import 'package:injast_admin/file_management/excel_import/csv_import_labels.dart';
 import 'package:injast_admin/file_management/excel_import/csv_parvande_dates.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_shenase.dart';
@@ -19,6 +20,12 @@ import 'package:injast_admin/import_sync/import_models.dart';
 import 'package:injast_admin/local_cache/parvande_server_send.dart';
 const _logName = 'excel_import';
 const _testLogName = 'csv_import_test';
+const _updateLogName = 'csv_import_update';
+
+void _updLog(String message) {
+  log(message, name: _updateLogName);
+  debugPrint('[$_updateLogName] $message');
+}
 
 class ExcelImportAnalysis {
   const ExcelImportAnalysis({
@@ -32,12 +39,15 @@ class ExcelImportAnalysis {
     required this.isHealthy,
     required this.healthMessage,
     required this.duplicateInFileCount,
-    required this.duplicateOnServerCount,
+    required this.insertOnServerCount,
+    required this.updateOnServerCount,
     required this.importableCount,
     required this.sampleIssues,
     required this.rows,
     required this.importableRows,
-    required this.serverShenaseSet,
+    required this.insertableRows,
+    required this.updatableRows,
+    required this.serverByShenase,
   });
 
   final String fileName;
@@ -49,13 +59,22 @@ class ExcelImportAnalysis {
   final List<String> unknownColumns;
   final bool isHealthy;
   final String healthMessage;
+  /// ردیف‌های حذف‌شده از فایل پس از قوانین تکراری کد صنفی.
   final int duplicateInFileCount;
-  final int duplicateOnServerCount;
+  final int insertOnServerCount;
+  final int updateOnServerCount;
   final int importableCount;
   final List<String> sampleIssues;
   final List<ExcelParsedRow> rows;
   final List<ExcelParsedRow> importableRows;
-  final Set<String> serverShenaseSet;
+  final List<ExcelParsedRow> insertableRows;
+  final List<ExcelParsedRow> updatableRows;
+  final Map<String, Map<String, dynamic>> serverByShenase;
+
+  Set<String> get serverShenaseSet => serverByShenase.keys.toSet();
+
+  /// سازگاری با UI قدیمی که «تکراری با سرور» می‌خواند — اکنون یعنی به‌روزرسانی.
+  int get duplicateOnServerCount => updateOnServerCount;
 }
 
 class ExcelImportRunProgress {
@@ -79,12 +98,16 @@ class ExcelImportRunResult {
   const ExcelImportRunResult({
     required this.sentCount,
     required this.finalize,
+    required this.updatedCount,
+    required this.updateFailures,
     required this.geocodeFailures,
     required this.stoppedEarly,
   });
 
   final int sentCount;
   final ImportFinalizeResult finalize;
+  final int updatedCount;
+  final int updateFailures;
   final int geocodeFailures;
   final bool stoppedEarly;
 }
@@ -126,12 +149,15 @@ class ExcelImportService {
         isHealthy: false,
         healthMessage: 'هیچ ردیف داده‌ای در فایل یافت نشد.',
         duplicateInFileCount: 0,
-        duplicateOnServerCount: 0,
+        insertOnServerCount: 0,
+        updateOnServerCount: 0,
         importableCount: 0,
         sampleIssues: const ['فایل فاقد ردیف داده است.'],
         rows: const [],
         importableRows: const [],
-        serverShenaseSet: const {},
+        insertableRows: const [],
+        updatableRows: const [],
+        serverByShenase: const {},
       );
     }
 
@@ -154,32 +180,23 @@ class ExcelImportService {
       name: _logName,
     );
 
-    onProgress?.call('در حال دریافت لیست کدهای صنفی موجود روی سرور...');
-    final serverShenase = await _loadServerShenaseSet();
+    onProgress?.call('مرتب‌سازی و حذف تکراری‌های کد صنفی...');
+    final dedupe = CsvImportDedupe.apply(rows);
+    final dedupedRows = dedupe.kept;
 
-    final seenInFile = <String>{};
-    var duplicateInFile = 0;
-    var duplicateOnServer = 0;
-    final importable = <ExcelParsedRow>[];
+    onProgress?.call('در حال دریافت لیست کدهای صنفی موجود روی سرور...');
+    final serverByShenase = await _loadServerByShenase();
+
+    final insertable = <ExcelParsedRow>[];
+    final updatable = <ExcelParsedRow>[];
     final issues = <String>[];
 
-    for (final row in rows) {
+    for (final row in dedupedRows) {
       final shenase = _shenaseFromRow(row);
       if (shenase.isEmpty) {
         if (issues.length < 8) {
           issues.add('ردیف ${row.rowIndex}: کد صنفی خالی است.');
         }
-        continue;
-      }
-
-      if (seenInFile.contains(shenase)) {
-        duplicateInFile += 1;
-        continue;
-      }
-      seenInFile.add(shenase);
-
-      if (serverShenase.contains(shenase)) {
-        duplicateOnServer += 1;
         continue;
       }
 
@@ -191,21 +208,62 @@ class ExcelImportService {
         continue;
       }
 
-      importable.add(row);
+      if (serverByShenase.containsKey(shenase)) {
+        updatable.add(row);
+      } else {
+        insertable.add(row);
+      }
     }
 
+    final importable = [...insertable, ...updatable];
     final isHealthy = missingRequired.isEmpty && importable.isNotEmpty;
     final healthMessage = _buildHealthMessage(
       missingRequired: missingRequired,
-      importableCount: importable.length,
+      insertCount: insertable.length,
+      updateCount: updatable.length,
+      removedDuplicates: dedupe.removedCount,
       totalRows: rows.length,
     );
 
     log(
-      'analyze done | importable=${importable.length} | '
-      'dupFile=$duplicateInFile | dupServer=$duplicateOnServer | healthy=$isHealthy',
+      'analyze done | importable=${importable.length} '
+      '(insert=${insertable.length} update=${updatable.length}) | '
+      'dupFile=${dedupe.removedCount} | healthy=$isHealthy',
       name: _logName,
     );
+
+    _updLog(
+      'ANALYZE | file=$fileName | rawRows=${rows.length} | '
+      'afterDedupe=${dedupedRows.length} | removedDup=${dedupe.removedCount} | '
+      'serverShenase=${serverByShenase.length} | '
+      'insert=${insertable.length} | update=${updatable.length} | '
+      'issues=${issues.length} | missingCols=$missingRequired',
+    );
+    _updLog('ANALYZE headers: ${headers.take(20).join(' | ')}');
+    for (final row in updatable.take(8)) {
+      final s = _shenaseFromRow(row);
+      final server = serverByShenase[s];
+      _updLog(
+        'ANALYZE update-candidate csvRow=${row.rowIndex} | shenase=$s | '
+        'csvStatus="${_cell(row.values, ExcelImportColumns.status)}" | '
+        'csvIssueDate="${_cell(row.values, ExcelImportColumns.issueDate)}" | '
+        'serverStatus="${server?['lbl_vaziyat_store']}"/'
+        '"${server?['vaziyat_store']}" | '
+        'serverIssueDate="${server?['date_sodor_store']}" | '
+        'serverId="${server?['id_parvandeh']}"',
+      );
+    }
+    for (final row in insertable.take(5)) {
+      _updLog(
+        'ANALYZE insert-candidate csvRow=${row.rowIndex} | '
+        'shenase=${_shenaseFromRow(row)} | '
+        'csvStatus="${_cell(row.values, ExcelImportColumns.status)}" | '
+        'csvIssueDate="${_cell(row.values, ExcelImportColumns.issueDate)}"',
+      );
+    }
+    if (issues.isNotEmpty) {
+      _updLog('ANALYZE sampleIssues: ${issues.join(' || ')}');
+    }
 
     return ExcelImportAnalysis(
       fileName: fileName,
@@ -217,18 +275,22 @@ class ExcelImportService {
       unknownColumns: unknownColumns,
       isHealthy: isHealthy,
       healthMessage: healthMessage,
-      duplicateInFileCount: duplicateInFile,
-      duplicateOnServerCount: duplicateOnServer,
+      duplicateInFileCount: dedupe.removedCount,
+      insertOnServerCount: insertable.length,
+      updateOnServerCount: updatable.length,
       importableCount: importable.length,
       sampleIssues: issues,
       rows: rows,
       importableRows: importable,
-      serverShenaseSet: serverShenase,
+      insertableRows: insertable,
+      updatableRows: updatable,
+      serverByShenase: serverByShenase,
     );
   }
 
   Future<ExcelImportRunResult> runImport({
     required List<ExcelParsedRow> rows,
+    Map<String, Map<String, dynamic>> serverByShenase = const {},
     void Function(ExcelImportRunProgress progress)? onProgress,
     bool Function()? shouldStop,
     bool verboseTestLog = false,
@@ -237,22 +299,126 @@ class ExcelImportService {
       throw Exception('پرونده‌ای برای ثبت باقی نمانده است.');
     }
 
-    final records = <ImportDraftRecord>[];
-    var geocodeFailures = 0;
-
-    if (verboseTestLog) {
-      log('runImport start | rows=${rows.length} | codeCo=$codeCo', name: _testLogName);
+    final toInsert = <ExcelParsedRow>[];
+    final toUpdate = <ExcelParsedRow>[];
+    for (final row in rows) {
+      final shenase = _shenaseFromRow(row);
+      if (serverByShenase.containsKey(shenase)) {
+        toUpdate.add(row);
+      } else {
+        toInsert.add(row);
+      }
     }
 
-    for (var i = 0; i < rows.length; i++) {
+    if (verboseTestLog) {
+      log(
+        'runImport start | rows=${rows.length} insert=${toInsert.length} '
+        'update=${toUpdate.length} | codeCo=$codeCo',
+        name: _testLogName,
+      );
+    }
+
+    final totalWork = rows.length;
+    var workDone = 0;
+    var geocodeFailures = 0;
+    var updatedCount = 0;
+    var updateFailures = 0;
+
+    // —— به‌روزرسانی پرونده‌های موجود (فقط وضعیت + تاریخ صدور) ——
+    _updLog(
+      'UPDATE START | toUpdate=${toUpdate.length} | toInsert=${toInsert.length} | '
+      'codeCo=$codeCo',
+    );
+    for (var i = 0; i < toUpdate.length; i++) {
       if (shouldStop?.call() == true) break;
-      final row = rows[i];
+      final row = toUpdate[i];
       final shenase = _shenaseFromRow(row);
       onProgress?.call(
         ExcelImportRunProgress(
-          message: 'آماده‌سازی ${i + 1}/${rows.length} — کد صنفی $shenase',
-          current: i,
-          total: rows.length,
+          message:
+              'به‌روزرسانی وضعیت/تاریخ صدور و انقضا ${i + 1}/${toUpdate.length} — کد $shenase',
+          current: workDone,
+          total: totalWork,
+          phase: 'update',
+        ),
+      );
+
+      final serverRow = serverByShenase[shenase];
+      if (serverRow == null) {
+        _updLog(
+          'UPDATE SKIP no-server-row | ${i + 1}/${toUpdate.length} | '
+          'shenase=$shenase | csvRow=${row.rowIndex}',
+        );
+        updateFailures += 1;
+        workDone += 1;
+        continue;
+      }
+
+      try {
+        final rawStatus = _cell(row.values, ExcelImportColumns.status);
+        final rawIssueDate = _cell(row.values, ExcelImportColumns.issueDate);
+        final statusLabel = ParvandeVaziyat.normalizeLabel(rawStatus);
+        final statusCode = ParvandeVaziyat.codeForLabel(statusLabel);
+        // تاریخ شمسی با `-` (بدون `/`) تا path سرور نشکند؛ تبدیل میلادی نکن.
+        final issueJalali = JalaliDateUtil.toPathSafeJalali(rawIssueDate);
+        final expJalali = CsvParvandeDates.computeExpJalaliPathSafe(rawIssueDate);
+        final oldStatus = '${serverRow['lbl_vaziyat_store']}/${serverRow['vaziyat_store']}';
+        final oldDate = '${serverRow['date_sodor_store']}';
+        final oldExp = '${serverRow['date_exp_store']}';
+        final id = '${serverRow['id_parvandeh']}';
+
+        _updLog(
+          'UPDATE PRE ${i + 1}/${toUpdate.length} | csvRow=${row.rowIndex} | '
+          'shenase=$shenase | id=$id | '
+          'rawStatus="$rawStatus" → label="$statusLabel" code=$statusCode | '
+          'rawDate="$rawIssueDate" → sendDate="$issueJalali" exp="$expJalali" | '
+          'OLD status=$oldStatus date=$oldDate exp=$oldExp',
+        );
+        _updLog(
+          'UPDATE ROW KEYS csvRow=${row.rowIndex}: '
+          '${row.values.entries.map((e) => '${e.key}=${_short(e.value, 40)}').join(' | ')}',
+        );
+
+        final updateResult = await _parvandeApi.updateParvandeh(
+          serverRow,
+          overrides: {
+            'vaziyat_store': statusCode,
+            'lbl_vaziyat_store': statusLabel,
+            'date_sodor_store': issueJalali,
+            'date_exp_store': expJalali,
+          },
+          verboseLog: true,
+        );
+        updatedCount += 1;
+        _updLog(
+          'UPDATE OK ${i + 1}/${toUpdate.length} | shenase=$shenase | id=$id | '
+          'sentStatus=$statusCode/$statusLabel | sentDate=$issueJalali | '
+          'sentExp=$expJalali | '
+          'http=${updateResult.statusCode} | body=${_short(updateResult.body, 120)}',
+        );
+      } catch (e, st) {
+        updateFailures += 1;
+        _updLog('UPDATE FAIL ${i + 1}/${toUpdate.length} | shenase=$shenase | $e');
+        log('$st', name: _updateLogName);
+      }
+      workDone += 1;
+    }
+    _updLog(
+      'UPDATE END | ok=$updatedCount | fail=$updateFailures | '
+      'insertQueued=${toInsert.length}',
+    );
+
+    // —— ثبت پرونده‌های جدید ——
+    final records = <ImportDraftRecord>[];
+    for (var i = 0; i < toInsert.length; i++) {
+      if (shouldStop?.call() == true) break;
+      final row = toInsert[i];
+      final shenase = _shenaseFromRow(row);
+      onProgress?.call(
+        ExcelImportRunProgress(
+          message: 'آماده‌سازی ثبت جدید ${i + 1}/${toInsert.length} — کد $shenase',
+          current: workDone,
+          total: totalWork,
           phase: 'map',
         ),
       );
@@ -279,9 +445,9 @@ class ExcelImportService {
         onProgress?.call(
           ExcelImportRunProgress(
             message:
-                'موقعیت‌یابی map.ir/نشان (${i + 1}/${rows.length}) — کد $shenase',
-            current: i,
-            total: rows.length,
+                'موقعیت‌یابی map.ir/نشان (${i + 1}/${toInsert.length}) — کد $shenase',
+            current: workDone,
+            total: totalWork,
             phase: 'geocode',
           ),
         );
@@ -317,51 +483,69 @@ class ExcelImportService {
           payload: payload,
         ),
       );
+      workDone += 1;
     }
 
-    if (records.isEmpty) {
+    ImportFinalizeResult finalize = ImportFinalizeResult(
+      success: true,
+      inserted: 0,
+      skipped: 0,
+      failed: 0,
+      docsInserted: 0,
+      docsRowAttempts: 0,
+    );
+    var sentCount = 0;
+    var stoppedEarly = shouldStop?.call() == true;
+
+    if (records.isNotEmpty && !stoppedEarly) {
+      final sendResult = await ParvandeServerSend.instance.sendAll(
+        codeCo: codeCo,
+        records: records,
+        skipImagePreparation: true,
+        shouldStop: shouldStop,
+        verboseLog: verboseTestLog,
+        onProgress: (p) {
+          onProgress?.call(
+            ExcelImportRunProgress(
+              message: p.message,
+              current: workDone.clamp(0, totalWork),
+              total: totalWork,
+              phase: p.phase,
+            ),
+          );
+        },
+      );
+      finalize = sendResult.finalize;
+      sentCount = sendResult.sentRecords;
+      stoppedEarly = sendResult.stoppedEarly;
+    } else if (records.isEmpty && toUpdate.isEmpty) {
       throw Exception('هیچ پرونده‌ای برای ارسال آماده نشد.');
     }
 
-    final sendResult = await ParvandeServerSend.instance.sendAll(
-      codeCo: codeCo,
-      records: records,
-      skipImagePreparation: true,
-      shouldStop: shouldStop,
-      verboseLog: verboseTestLog,
-      onProgress: (p) {
-        onProgress?.call(
-          ExcelImportRunProgress(
-            message: p.message,
-            current: p.done,
-            total: p.total,
-            phase: p.phase,
-          ),
-        );
-      },
-    );
-
     log(
-      'import geocode | ok=${rows.length - geocodeFailures} | '
-      'failed=$geocodeFailures | total=${rows.length}',
+      'import done | insert=${finalize.inserted} update=$updatedCount '
+      'updateFail=$updateFailures geocodeFail=$geocodeFailures',
       name: verboseTestLog ? _testLogName : _logName,
     );
 
     if (verboseTestLog) {
       log(
-        '==== CSV IMPORT TEST END | inserted=${sendResult.finalize.inserted} '
-        'skipped=${sendResult.finalize.skipped} failed=${sendResult.finalize.failed} '
-        'errors=${sendResult.finalize.errors} ====',
+        '==== CSV IMPORT TEST END | inserted=${finalize.inserted} '
+        'updated=$updatedCount updateFail=$updateFailures '
+        'skipped=${finalize.skipped} failed=${finalize.failed} '
+        'errors=${finalize.errors} ====',
         name: _testLogName,
       );
-      await _logServerPresenceAfterSend(rows);
+      await _logServerPresenceAfterSend(toInsert);
     }
 
     return ExcelImportRunResult(
-      sentCount: sendResult.sentRecords,
-      finalize: sendResult.finalize,
+      sentCount: sentCount,
+      finalize: finalize,
+      updatedCount: updatedCount,
+      updateFailures: updateFailures,
       geocodeFailures: geocodeFailures,
-      stoppedEarly: sendResult.stoppedEarly,
+      stoppedEarly: stoppedEarly,
     );
   }
 
@@ -396,7 +580,8 @@ class ExcelImportService {
     log('==== CSV IMPORT TEST START ====', name: _testLogName);
     log(
       'file=${analysis.fileName} | codeCo=$codeCo | testCount=${testRows.length} | '
-      'importableInFile=${analysis.importableCount} | dupServer=${analysis.duplicateOnServerCount}',
+      'importableInFile=${analysis.importableCount} | '
+      'insert=${analysis.insertOnServerCount} update=${analysis.updateOnServerCount}',
       name: _testLogName,
     );
 
@@ -404,32 +589,34 @@ class ExcelImportService {
       final row = testRows[i];
       final shenase = _shenaseFromRow(row);
       final tracking = _cell(row.values, ExcelImportColumns.trackingNovin);
-      final onServer = analysis.serverShenaseSet.contains(shenase);
+      final onServer = analysis.serverByShenase.containsKey(shenase);
       final issues = _validateRow(row);
       log(
         'test pick ${i + 1}/${testRows.length} | csvRow=${row.rowIndex} | '
         'shenase=$shenase | tracking=$tracking | id_parvandeh=${_numericIdParvandehFromShenase(shenase)} | '
-        'alreadyOnServer=$onServer | validationIssues=$issues',
+        'alreadyOnServer=$onServer | mode=${onServer ? 'update' : 'insert'} | '
+        'validationIssues=$issues',
         name: _testLogName,
       );
     }
 
     return runImport(
       rows: testRows,
+      serverByShenase: analysis.serverByShenase,
       onProgress: onProgress,
       shouldStop: shouldStop,
       verboseTestLog: true,
     );
   }
 
-  Future<Set<String>> _loadServerShenaseSet() async {
+  Future<Map<String, Map<String, dynamic>>> _loadServerByShenase() async {
     final rows = await _parvandeApi.fetchAll(codeCo);
-    final out = <String>{};
+    final out = <String, Map<String, dynamic>>{};
     for (final row in rows) {
       final s = ExcelImportShenase.normalize(
         row['shenase_store']?.toString() ?? '',
       );
-      if (s.isNotEmpty) out.add(s);
+      if (s.isNotEmpty) out[s] = row;
     }
     return out;
   }
@@ -570,16 +757,27 @@ class ExcelImportService {
 
   String _buildHealthMessage({
     required List<String> missingRequired,
-    required int importableCount,
+    required int insertCount,
+    required int updateCount,
+    required int removedDuplicates,
     required int totalRows,
   }) {
     if (missingRequired.isNotEmpty) {
       return 'ستون‌های ضروری یافت نشد: ${missingRequired.join('، ')}';
     }
-    if (importableCount == 0) {
+    final importable = insertCount + updateCount;
+    if (importable == 0) {
       return 'هیچ ردیف قابل ثبت باقی نمانده (همه تکراری یا ناقص هستند).';
     }
-    return 'فایل سالم است؛ $importableCount پرونده از $totalRows ردیف قابل ثبت است.';
+    final parts = <String>[
+      'فایل سالم است؛ از $totalRows ردیف، $importable پرونده قابل پردازش است',
+      'ثبت جدید: $insertCount',
+      'به‌روزرسانی وضعیت/تاریخ: $updateCount',
+    ];
+    if (removedDuplicates > 0) {
+      parts.add('حذف تکراری در فایل: $removedDuplicates');
+    }
+    return '${parts.join(' — ')}.';
   }
 
   String _shenaseFromRow(ExcelParsedRow row) =>

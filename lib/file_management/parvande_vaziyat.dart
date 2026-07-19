@@ -37,6 +37,8 @@ class ParvandeVaziyat {
     final t = raw?.trim() ?? '';
     if (t.isEmpty || t == 'null') return options.first;
     if (t == 'فاقد پروانه(فاقد اعتبار)') return 'فاقد اعتبار';
+    // نسخهٔ path-safe که با خط تیره روی سرور ذخیره شده است.
+    if (t == 'فعال-صادر شده') return 'فعال/صادر شده';
     if (options.contains(t)) return t;
     final fromCode = _codeToLabel[t];
     if (fromCode != null) return fromCode;

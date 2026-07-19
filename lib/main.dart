@@ -7,6 +7,25 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:injast_admin/asnaf_site_page.dart';
+import 'package:injast_admin/features/benefits/manage_benefits_page.dart';
+import 'package:injast_admin/features/calendar/my_calendar_page.dart';
+import 'package:injast_admin/features/laws/manage_laws_page.dart';
+import 'package:injast_admin/features/news/manage_news_page.dart';
+import 'package:injast_admin/features/parvande_new/new_parvande_page.dart';
+import 'package:injast_admin/features/permissions/manage_access_page.dart';
+import 'package:injast_admin/features/personnel/manage_personnel_page.dart';
+import 'package:injast_admin/features/personnel/personnel_display_page.dart';
+import 'package:injast_admin/features/raste/manage_raste_page.dart';
+import 'package:injast_admin/features/rate_sheets/manage_rate_sheets_page.dart';
+import 'package:injast_admin/features/reports/bazrasi_reports_hub_page.dart';
+import 'package:injast_admin/features/requests/manage_organizations_page.dart';
+import 'package:injast_admin/features/requests/manage_request_types_page.dart';
+import 'package:injast_admin/features/requests/manage_requests_page.dart';
+import 'package:injast_admin/features/shared/admin_ui.dart';
+import 'package:injast_admin/features/shekayat/manage_shekayat_page.dart';
+import 'package:injast_admin/features/shekayat/register_shekayat_page.dart';
+import 'package:injast_admin/features/shekayat/shekayat_reports_page.dart';
+import 'package:injast_admin/features/tutorials/manage_tutorials_page.dart';
 import 'package:injast_admin/file_management/bazrasi_map_page.dart';
 import 'package:injast_admin/file_management/data_backup_page.dart';
 import 'package:injast_admin/file_management/file_management_page.dart';
@@ -186,7 +205,7 @@ class _PosWebHomePageState extends State<PosWebHomePage> {
     return Scaffold(
       appBar: user != null
           ? PreferredSize(
-              preferredSize: const Size.fromHeight(432),
+              preferredSize: const Size.fromHeight(148),
               child: _LoggedInTopPanel(
                 user: user,
                 unionInfo: _svc.unionInfo,
@@ -202,6 +221,7 @@ class _PosWebHomePageState extends State<PosWebHomePage> {
           : user != null
               ? _LoggedInHome(
                   user: user,
+                  unionInfo: _svc.unionInfo,
                 )
               : _QrActivationView(
                   svc: _svc,
@@ -219,15 +239,18 @@ class _PosWebHomePageState extends State<PosWebHomePage> {
 class _LoggedInHome extends StatelessWidget {
   const _LoggedInHome({
     required this.user,
+    this.unionInfo,
   });
 
   final Map<String, dynamic> user;
+  final Map<String, dynamic>? unionInfo;
 
   @override
   Widget build(BuildContext context) {
     final categories = _panelCategories;
     return _UserContext(
       user: user,
+      unionInfo: unionInfo,
       child: Container(
         color: const Color(0xFFF4F7FB),
         child: ListView.builder(
@@ -318,119 +341,228 @@ class _PanelItemTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         onTap: () async {
           final user = _UserContext.of(context);
-          if (item.actionKey == 'asnaf_site') {
-            final codeCo = user?['code_co']?.toString().trim() ?? '';
-            final userCode = user?['id_user']?.toString().trim() ?? '—';
-            final firstName = user?['name_user']?.toString().trim() ?? '';
-            final familyName = user?['family_user']?.toString().trim() ?? '';
-            final rawUnionName = user?['name_co']?.toString().trim() ?? '';
-            final unionName = rawUnionName.isEmpty ? '—' : rawUnionName;
-            final userName = '$firstName $familyName'.trim().isEmpty
-                ? '—'
-                : '$firstName $familyName'.trim();
-            if (codeCo.isEmpty) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('کد اتحادیه نامعتبر است.')),
-              );
-              return;
-            }
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => AsnafSitePage(
-                  codeCo: codeCo,
-                  userCode: userCode,
-                  userName: userName,
-                  unionName: unionName,
-                ),
-              ),
+          final codeCo = user?['code_co']?.toString().trim() ?? '';
+          final idUser = user?['id_user']?.toString().trim() ?? '';
+          final firstName = user?['name_user']?.toString().trim() ?? '';
+          final familyName = user?['family_user']?.toString().trim() ?? '';
+          final userName = '$firstName $familyName'.trim();
+          final typeUser = user?['type_user']?.toString();
+          final idUserInt = int.tryParse(idUser);
+
+          Future<void> push(Widget page) async {
+            await Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => page),
             );
-            return;
           }
-          if (item.actionKey == 'union_members' ||
-              item.actionKey == 'file_management') {
-            final codeCo = user?['code_co']?.toString().trim() ?? '';
-            if (codeCo.isNotEmpty) {
-              final firstName = user?['name_user']?.toString().trim() ?? '';
-              final familyName = user?['family_user']?.toString().trim() ?? '';
-              final userName = '$firstName $familyName'.trim();
-              final typeUser = user?['type_user']?.toString();
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => FileManagementPage(
-                    codeCo: codeCo,
-                    currentUserId: user?['id_user']?.toString(),
-                    currentUserName: userName.isEmpty ? null : userName,
-                    currentUserRole: userRoleLabel(typeUser),
-                    currentUserType: typeUser,
-                    isSuperAdmin:
-                        typeUser?.trim().toLowerCase() == 'super_admin',
-                  ),
-                ),
-              );
-              return;
-            }
-          }
-          if (item.actionKey == 'inspection_map') {
-            final codeCo = user?['code_co']?.toString().trim() ?? '';
-            if (codeCo.isNotEmpty) {
-              final firstName = user?['name_user']?.toString().trim() ?? '';
-              final familyName = user?['family_user']?.toString().trim() ?? '';
-              final userName = '$firstName $familyName'.trim();
-              final typeUser = user?['type_user']?.toString();
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => BazrasiMapPage(
-                    codeCo: codeCo,
-                    currentUserId: user?['id_user']?.toString(),
-                    currentUserName: userName.isEmpty ? null : userName,
-                    currentUserRole: userRoleLabel(typeUser),
-                    currentUserType: typeUser,
-                    isSuperAdmin:
-                        typeUser?.trim().toLowerCase() == 'super_admin',
-                    sessionUser: user,
-                  ),
-                ),
-              );
-              return;
-            }
-          }
-          if (item.actionKey == 'settings_menu') {
-            await _showSettingsMenu(context);
-            return;
-          }
-          if (item.actionKey == 'data_backup') {
-            final codeCo = user?['code_co']?.toString().trim() ?? '';
-            if (codeCo.isNotEmpty) {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => DataBackupPage(
-                    codeCo: codeCo,
-                    sessionUser: user,
-                  ),
-                ),
-              );
-              return;
-            }
-          }
-          if (item.actionKey == 'hagh_ozviat_reports') {
-            final codeCo = user?['code_co']?.toString().trim() ?? '';
-            if (codeCo.isEmpty) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('کد اتحادیه نامعتبر است.')),
-              );
-              return;
-            }
-            final unionName = user?['name_co']?.toString().trim() ?? '';
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => HaghOzviatDebtReportsPage(
-                  codeCo: codeCo,
-                  unionName: unionName,
-                ),
-              ),
+
+          bool requireCodeCo() {
+            if (codeCo.isNotEmpty) return true;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('کد اتحادیه نامعتبر است.')),
             );
-            return;
+            return false;
           }
+
+          switch (item.actionKey) {
+            case 'asnaf_site':
+              if (!requireCodeCo()) return;
+              final rawUnionName = user?['name_co']?.toString().trim() ?? '';
+              await push(AsnafSitePage(
+                codeCo: codeCo,
+                userCode: idUser.isEmpty ? '—' : idUser,
+                userName: userName.isEmpty ? '—' : userName,
+                unionName: rawUnionName.isEmpty ? '—' : rawUnionName,
+              ));
+              return;
+            case 'union_members':
+            case 'file_management':
+              if (!requireCodeCo()) return;
+              await push(FileManagementPage(
+                codeCo: codeCo,
+                currentUserId: idUser.isEmpty ? null : idUser,
+                currentUserName: userName.isEmpty ? null : userName,
+                currentUserRole: userRoleLabel(typeUser),
+                currentUserType: typeUser,
+                isSuperAdmin: typeUser?.trim().toLowerCase() == 'super_admin',
+              ));
+              return;
+            case 'inspection_map':
+              if (!requireCodeCo()) return;
+              await push(BazrasiMapPage(
+                codeCo: codeCo,
+                currentUserId: idUser.isEmpty ? null : idUser,
+                currentUserName: userName.isEmpty ? null : userName,
+                currentUserRole: userRoleLabel(typeUser),
+                currentUserType: typeUser,
+                isSuperAdmin: typeUser?.trim().toLowerCase() == 'super_admin',
+                sessionUser: user,
+              ));
+              return;
+            case 'settings_menu':
+              await _showSettingsMenu(context);
+              return;
+            case 'data_backup':
+              if (!requireCodeCo()) return;
+              await push(DataBackupPage(codeCo: codeCo, sessionUser: user));
+              return;
+            case 'hagh_ozviat_reports':
+              if (!requireCodeCo()) return;
+              await push(HaghOzviatDebtReportsPage(
+                codeCo: codeCo,
+                unionName: user?['name_co']?.toString().trim() ?? '',
+              ));
+              return;
+            case 'manage_raste':
+              if (!requireCodeCo()) return;
+              await push(ManageRastePage(
+                codeCo: codeCo,
+                idUser: idUser.isEmpty ? '0' : idUser,
+              ));
+              return;
+            case 'personnel_display':
+              if (!requireCodeCo()) return;
+              await push(PersonnelDisplayPage(codeCo: codeCo));
+              return;
+            case 'manage_personnel':
+              if (!requireCodeCo()) return;
+              await push(ManagePersonnelPage(
+                codeCo: codeCo,
+                currentUserId: idUser.isEmpty ? null : idUser,
+              ));
+              return;
+            case 'manage_rate_sheets':
+              if (!requireCodeCo()) return;
+              await push(ManageRateSheetsPage(
+                codeCo: codeCo,
+                updatedBy: idUserInt,
+              ));
+              return;
+            case 'new_parvande':
+              if (!requireCodeCo()) return;
+              await push(NewParvandePage(
+                codeCo: codeCo,
+                idUser: idUser.isEmpty ? '0' : idUser,
+                unionInfo: _UserContext.unionOf(context),
+              ));
+              return;
+            case 'shekayat_hub':
+              if (!requireCodeCo()) return;
+              final choice = await showFeatureHubSheet<String>(
+                context: context,
+                title: 'شکایات',
+                items: const [
+                  FeatureHubItem(
+                    label: 'مدیریت شکایات',
+                    subtitle: 'پیگیری و بررسی پرونده‌های شکایت',
+                    icon: FluentIcons.clipboard_error_24_regular,
+                    color: Color(0xFFD32F2F),
+                    value: 'manage',
+                  ),
+                  FeatureHubItem(
+                    label: 'ثبت شکایت',
+                    subtitle: 'ثبت شکایت جدید',
+                    icon: FluentIcons.document_edit_24_regular,
+                    color: Color(0xFF8E24AA),
+                    value: 'register',
+                  ),
+                ],
+              );
+              if (!context.mounted || choice == null) return;
+              if (choice == 'register') {
+                await push(RegisterShekayatPage(
+                  codeCo: codeCo,
+                  currentUserId: idUser.isEmpty ? null : idUser,
+                  currentUser: user,
+                  unionName: _UserContext.unionOf(context)?['name_co']?.toString(),
+                ));
+              } else {
+                await push(ManageShekayatPage(
+                  codeCo: codeCo,
+                  currentUserId: idUser.isEmpty ? null : idUser,
+                  currentUserType: typeUser,
+                  currentUser: user,
+                ));
+              }
+              return;
+            case 'bazrasi_reports':
+              if (!requireCodeCo()) return;
+              await push(BazrasiReportsHubPage(
+                codeCo: codeCo,
+                sessionUser: user,
+              ));
+              return;
+            case 'shekayat_reports':
+              if (!requireCodeCo()) return;
+              await push(ShekayatReportsPage(codeCo: codeCo));
+              return;
+            case 'my_calendar':
+              if (!requireCodeCo()) return;
+              await push(MyCalendarPage(
+                codeCo: codeCo,
+                userId: idUser.isEmpty ? null : idUser,
+              ));
+              return;
+            case 'manage_laws':
+              if (!requireCodeCo()) return;
+              await push(ManageLawsPage(codeCo: codeCo));
+              return;
+            case 'member_requests':
+              if (!requireCodeCo()) return;
+              final choice = await showFeatureHubSheet<String>(
+                context: context,
+                title: 'درخواست اعضاء',
+                items: const [
+                  FeatureHubItem(
+                    label: 'مدیریت درخواست‌ها',
+                    subtitle: 'بررسی و تغییر وضعیت',
+                    icon: Icons.inbox_outlined,
+                    color: Color(0xFF1565C0),
+                    value: 'requests',
+                  ),
+                  FeatureHubItem(
+                    label: 'تنظیم نوع درخواست',
+                    subtitle: 'تعریف انواع درخواست',
+                    icon: Icons.category_outlined,
+                    color: Color(0xFFEF6C00),
+                    value: 'types',
+                  ),
+                  FeatureHubItem(
+                    label: 'تنظیم ارگان‌های طرف قرارداد',
+                    subtitle: 'مدیریت ارگان‌های مقصد',
+                    icon: Icons.account_balance_outlined,
+                    color: Color(0xFF00897B),
+                    value: 'orgs',
+                  ),
+                ],
+              );
+              if (!context.mounted || choice == null) return;
+              await push(switch (choice) {
+                'types' => ManageRequestTypesPage(codeCo: codeCo),
+                'orgs' => ManageOrganizationsPage(codeCo: codeCo),
+                _ => ManageRequestsPage(codeCo: codeCo),
+              });
+              return;
+            case 'manage_benefits':
+              if (!requireCodeCo()) return;
+              await push(ManageBenefitsPage(codeCo: codeCo));
+              return;
+            case 'manage_news':
+              if (!requireCodeCo()) return;
+              await push(ManageNewsPage(
+                codeCo: codeCo,
+                currentUserId: idUser.isEmpty ? null : idUser,
+              ));
+              return;
+            case 'manage_tutorials':
+              if (!requireCodeCo()) return;
+              await push(ManageTutorialsPage(
+                codeCo: codeCo,
+                currentUserId: idUser.isEmpty ? null : idUser,
+              ));
+              return;
+          }
+
+          if (!context.mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('«${item.label}» به‌زودی فعال می‌شود.')),
           );
@@ -555,27 +687,28 @@ class _PanelItemTile extends StatelessWidget {
       ],
     );
     if (selected == null || !context.mounted) return;
+    final user = _UserContext.of(context);
+    final codeCo = user?['code_co']?.toString().trim() ?? '';
+    if (codeCo.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('کد اتحادیه نامعتبر است.')),
+      );
+      return;
+    }
     if (selected == 'sync') {
-      final user = _UserContext.of(context);
-      final codeCo = user?['code_co']?.toString().trim() ?? '';
-      if (codeCo.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('کد اتحادیه نامعتبر است.')),
-        );
-        return;
-      }
       Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => SettingsSyncPage(codeCo: codeCo)),
       );
       return;
     }
-    final label = switch (selected) {
-      'access' => 'سطح دسترسی',
-      'special' => 'موارد خاص',
-      _ => 'تنظیمات',
-    };
+    if (selected == 'access') {
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => ManageAccessPage(codeCo: codeCo)),
+      );
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('گزینه «$label» انتخاب شد.')),
+      const SnackBar(content: Text('گزینه «موارد خاص» به‌زودی فعال می‌شود.')),
     );
   }
 }
@@ -612,15 +745,20 @@ class _UserContext extends InheritedWidget {
   const _UserContext({
     required super.child,
     required this.user,
+    this.unionInfo,
   });
   final Map<String, dynamic> user;
+  final Map<String, dynamic>? unionInfo;
 
   static Map<String, dynamic>? of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<_UserContext>()?.user;
 
+  static Map<String, dynamic>? unionOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_UserContext>()?.unionInfo;
+
   @override
   bool updateShouldNotify(covariant _UserContext oldWidget) =>
-      oldWidget.user != user;
+      oldWidget.user != user || oldWidget.unionInfo != unionInfo;
 }
 
 const List<_PanelCategory> _panelCategories = [
@@ -629,14 +767,18 @@ const List<_PanelCategory> _panelCategories = [
     titleIcon: FluentIcons.settings_24_regular,
     titleColor: Color(0xFF2E7D32),
     items: [
-      //  _PanelItem(label: 'معرفی رسته', icon: FluentIcons.branch_24_regular, backgroundColor: Color(0xFFE8F5E9), iconColor: Color(0xFF2E7D32)),
+      _PanelItem(
+          label: 'معرفی رسته',
+          icon: FluentIcons.branch_24_regular,
+          backgroundColor: Color(0xFFE8F5E9),
+          iconColor: Color(0xFF2E7D32),
+          actionKey: 'manage_raste'),
       _PanelItem(
           label: 'سایت ایرانی اصناف',
           icon: FluentIcons.globe_24_regular,
           backgroundColor: Color(0xFFE8EAF6),
           iconColor: Color(0xFF3949AB),
           actionKey: 'asnaf_site'),
-      //   _PanelItem(label: 'اعضاء اتحادیه', icon: FluentIcons.people_24_regular, backgroundColor: Color(0xFFE3F2FD), iconColor: Color(0xFF1565C0), actionKey: 'union_members'),
       _PanelItem(
           label: 'مدیریت پرونده‌ها',
           icon: FluentIcons.document_table_24_regular,
@@ -649,14 +791,53 @@ const List<_PanelCategory> _panelCategories = [
           backgroundColor: Color(0xFFFFF3E0),
           iconColor: Color(0xFF6D4C41),
           actionKey: 'data_backup'),
-      //   _PanelItem(label: 'نمایش اسامی پرسنل', icon: FluentIcons.person_accounts_24_regular, backgroundColor: Color(0xFFF3E5F5), iconColor: Color(0xFF7B1FA2)),
-      //   _PanelItem(label: 'تنظیم اسامی پرسنل', icon: Icons.manage_accounts_outlined, backgroundColor: Color(0xFFFFF3E0), iconColor: Color(0xFFEF6C00)),
-      //   _PanelItem(label: 'مدیریت نرخ‌نامه', icon: FluentIcons.receipt_24_regular, backgroundColor: Color(0xFFE0F2F1), iconColor: Color(0xFF00695C)),
-      //   _PanelItem(label: 'تنظیمات', icon: FluentIcons.settings_24_regular, backgroundColor: Color(0xFFFFEBEE), iconColor: Color(0xFFC62828), actionKey: 'settings_menu'),
+      _PanelItem(
+          label: 'نمایش اسامی پرسنل',
+          icon: FluentIcons.person_accounts_24_regular,
+          backgroundColor: Color(0xFFF3E5F5),
+          iconColor: Color(0xFF7B1FA2),
+          actionKey: 'personnel_display'),
+      _PanelItem(
+          label: 'تنظیم اسامی پرسنل',
+          icon: Icons.manage_accounts_outlined,
+          backgroundColor: Color(0xFFFFF3E0),
+          iconColor: Color(0xFFEF6C00),
+          actionKey: 'manage_personnel'),
+      _PanelItem(
+          label: 'مدیریت نرخ‌نامه',
+          icon: FluentIcons.receipt_24_regular,
+          backgroundColor: Color(0xFFE0F2F1),
+          iconColor: Color(0xFF00695C),
+          actionKey: 'manage_rate_sheets'),
+      _PanelItem(
+          label: 'تنظیمات',
+          icon: FluentIcons.settings_24_regular,
+          backgroundColor: Color(0xFFFFEBEE),
+          iconColor: Color(0xFFC62828),
+          actionKey: 'settings_menu'),
     ],
   ),
   _PanelCategory(
-    title: 'گزارشات',
+    title: 'ثبت و عملیات',
+    titleIcon: FluentIcons.edit_24_regular,
+    titleColor: Color(0xFFEF6C00),
+    items: [
+      _PanelItem(
+          label: 'پرونده جدید',
+          icon: FluentIcons.document_add_24_regular,
+          backgroundColor: Color(0xFFFFF3E0),
+          iconColor: Color(0xFFEF6C00),
+          actionKey: 'new_parvande'),
+      _PanelItem(
+          label: 'شکایات',
+          icon: FluentIcons.warning_24_regular,
+          backgroundColor: Color(0xFFFFEBEE),
+          iconColor: Color(0xFFD32F2F),
+          actionKey: 'shekayat_hub'),
+    ],
+  ),
+  _PanelCategory(
+    title: 'گزارشات و آمار',
     titleIcon: FluentIcons.chart_multiple_24_regular,
     titleColor: Color(0xFF6A1B9A),
     items: [
@@ -667,10 +848,22 @@ const List<_PanelCategory> _panelCategories = [
         iconColor: Color(0xFF6A1B9A),
         actionKey: 'hagh_ozviat_reports',
       ),
+      _PanelItem(
+          label: 'گزارشات بازرسی',
+          icon: FluentIcons.document_search_24_regular,
+          backgroundColor: Color(0xFFE8F5E9),
+          iconColor: Color(0xFF2E7D32),
+          actionKey: 'bazrasi_reports'),
+      _PanelItem(
+          label: 'گزارشات شکایات',
+          icon: FluentIcons.data_histogram_24_regular,
+          backgroundColor: Color(0xFFE1F5FE),
+          iconColor: Color(0xFF0277BD),
+          actionKey: 'shekayat_reports'),
     ],
   ),
   _PanelCategory(
-    title: 'بازرسی و گزارشات بازرسی',
+    title: 'بازرسی',
     titleIcon: FluentIcons.clipboard_pulse_24_regular,
     titleColor: Color(0xFF1565C0),
     items: [
@@ -682,54 +875,49 @@ const List<_PanelCategory> _panelCategories = [
           actionKey: 'inspection_map'),
     ],
   ),
-  // _PanelCategory(
-  //   title: 'ثبت و عملیات',
-  //   titleIcon: FluentIcons.edit_24_regular,
-  //   titleColor: Color(0xFFEF6C00),
-  //   items: [
-  //     _PanelItem(label: 'پرونده جدید', icon: FluentIcons.document_add_24_regular, backgroundColor: Color(0xFFFFF3E0), iconColor: Color(0xFFEF6C00)),
-  //     _PanelItem(label: 'بازرسی', icon: FluentIcons.location_24_regular, backgroundColor: Color(0xFFE8EAF6), iconColor: Color(0xFF3949AB)),
-  //     _PanelItem(label: 'شکایات', icon: FluentIcons.warning_24_regular, backgroundColor: Color(0xFFFFEBEE), iconColor: Color(0xFFD32F2F)),
-  //     _PanelItem(label: 'ارسال لینک دعوت', icon: FluentIcons.mail_24_regular, backgroundColor: Color(0xFFE3F2FD), iconColor: Color(0xFF1976D2)),
-  //     _PanelItem(label: 'ثبت شکایت', icon: FluentIcons.document_edit_24_regular, backgroundColor: Color(0xFFF3E5F5), iconColor: Color(0xFF8E24AA)),
-  //   ],
-  // ),
-  // _PanelCategory(
-  //   title: 'گزارشات و آمار',
-  //   titleIcon: FluentIcons.chart_multiple_24_regular,
-  //   titleColor: Color(0xFF3949AB),
-  //   items: [
-  //     _PanelItem(label: 'آمار وگزارشات', icon: FluentIcons.chart_multiple_24_regular, backgroundColor: Color(0xFFE8EAF6), iconColor: Color(0xFF3949AB)),
-  //     _PanelItem(label: 'آمار لحظه‌ای وضعیت شکایات', icon: FluentIcons.data_histogram_24_regular, backgroundColor: Color(0xFFE1F5FE), iconColor: Color(0xFF0277BD)),
-  //     _PanelItem(label: 'گزارشات ویژه بازرسی', icon: FluentIcons.document_search_24_regular, backgroundColor: Color(0xFFE8F5E9), iconColor: Color(0xFF2E7D32)),
-  //   ],
-  // ),
-  // _PanelCategory(
-  //   title: 'خدمات و امکانات',
-  //   titleIcon: FluentIcons.gift_24_regular,
-  //   titleColor: Color(0xFFC2185B),
-  //   items: [
-  //     _PanelItem(label: 'تقویم من', icon: FluentIcons.calendar_24_regular, backgroundColor: Color(0xFFFFEBEE), iconColor: Color(0xFFD32F2F)),
-  //     _PanelItem(label: 'قوانین و مقررات', icon: FluentIcons.document_text_24_regular, backgroundColor: Color(0xFFE3F2FD), iconColor: Color(0xFF1565C0)),
-  //     _PanelItem(label: 'درخواست اعضاء', icon: FluentIcons.clipboard_task_24_regular, backgroundColor: Color(0xFFE8EAF6), iconColor: Color(0xFF3949AB)),
-  //     _PanelItem(label: 'مشاور', icon: FluentIcons.person_chat_24_regular, backgroundColor: Color(0xFFE0F2F1), iconColor: Color(0xFF00695C)),
-  //     _PanelItem(label: 'کارشناس', icon: FluentIcons.person_feedback_24_regular, backgroundColor: Color(0xFFFFF3E0), iconColor: Color(0xFFEF6C00)),
-  //     _PanelItem(label: 'مزایا و خدمات', icon: FluentIcons.wallet_24_regular, backgroundColor: Color(0xFFF3E5F5), iconColor: Color(0xFF7B1FA2)),
-  //     _PanelItem(label: 'مدیریت اخبار', icon: FluentIcons.news_24_regular, backgroundColor: Color(0xFFE8F5E9), iconColor: Color(0xFF2E7D32)),
-  //     _PanelItem(label: 'مدیریت آموزش', icon: FluentIcons.book_24_regular, backgroundColor: Color(0xFFE1F5FE), iconColor: Color(0xFF0277BD)),
-  //     _PanelItem(label: 'تعاونی', icon: FluentIcons.building_shop_24_regular, backgroundColor: Color(0xFFFFF8E1), iconColor: Color(0xFFF9A825)),
-  //   ],
-  // ),
-  // _PanelCategory(
-  //   title: 'در حال توسعه',
-  //   titleIcon: FluentIcons.toolbox_24_regular,
-  //   titleColor: Color(0xFF6A1B9A),
-  //   items: [
-  //     _PanelItem(label: 'مشاوره', icon: FluentIcons.chat_24_regular, backgroundColor: Color(0xFFF3E5F5), iconColor: Color(0xFF8E24AA)),
-  //     _PanelItem(label: 'اطلاعیه‌ها', icon: FluentIcons.alert_24_regular, backgroundColor: Color(0xFFE3F2FD), iconColor: Color(0xFF1565C0)),
-  //     _PanelItem(label: 'نظر سنجی', icon: FluentIcons.poll_24_regular, backgroundColor: Color(0xFFE8F5E9), iconColor: Color(0xFF2E7D32)),
-  //   ],
-  // ),
+  _PanelCategory(
+    title: 'خدمات و امکانات',
+    titleIcon: FluentIcons.gift_24_regular,
+    titleColor: Color(0xFFC2185B),
+    items: [
+      _PanelItem(
+          label: 'تقویم من',
+          icon: FluentIcons.calendar_24_regular,
+          backgroundColor: Color(0xFFFFEBEE),
+          iconColor: Color(0xFFD32F2F),
+          actionKey: 'my_calendar'),
+      _PanelItem(
+          label: 'قوانین و مقررات',
+          icon: FluentIcons.document_text_24_regular,
+          backgroundColor: Color(0xFFE3F2FD),
+          iconColor: Color(0xFF1565C0),
+          actionKey: 'manage_laws'),
+      _PanelItem(
+          label: 'درخواست اعضاء',
+          icon: FluentIcons.clipboard_task_24_regular,
+          backgroundColor: Color(0xFFE8EAF6),
+          iconColor: Color(0xFF3949AB),
+          actionKey: 'member_requests'),
+      _PanelItem(
+          label: 'مزایا و خدمات',
+          icon: FluentIcons.wallet_24_regular,
+          backgroundColor: Color(0xFFF3E5F5),
+          iconColor: Color(0xFF7B1FA2),
+          actionKey: 'manage_benefits'),
+      _PanelItem(
+          label: 'مدیریت اخبار',
+          icon: FluentIcons.news_24_regular,
+          backgroundColor: Color(0xFFE8F5E9),
+          iconColor: Color(0xFF2E7D32),
+          actionKey: 'manage_news'),
+      _PanelItem(
+          label: 'مدیریت آموزش',
+          icon: FluentIcons.book_24_regular,
+          backgroundColor: Color(0xFFE1F5FE),
+          iconColor: Color(0xFF0277BD),
+          actionKey: 'manage_tutorials'),
+    ],
+  ),
 ];
 
 class _LoggedInTopPanel extends StatefulWidget {
@@ -831,28 +1019,23 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
     final roleText = _roleFa(_u('type_user'));
     return AppBar(
       automaticallyImplyLeading: false,
-      toolbarHeight: 432,
+      toolbarHeight: 148,
       backgroundColor: const Color(0xFF0E1B2D),
       elevation: 0,
       flexibleSpace: SafeArea(
+        bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
           child: Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               gradient: const LinearGradient(
                 begin: Alignment.topRight,
                 end: Alignment.bottomLeft,
                 colors: [Color(0xFF1B2A41), Color(0xFF263E62)],
               ),
-              boxShadow: const [
-                BoxShadow(
-                    color: Color(0x44000000),
-                    blurRadius: 14,
-                    offset: Offset(0, 4)),
-              ],
-              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
             ),
             child: FutureBuilder<HomeDashboardInsights>(
               future: _insightsFuture,
@@ -863,231 +1046,146 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
                     );
                 final loadingInsights =
                     snapshot.connectionState == ConnectionState.waiting;
-                final stats = <Widget>[
-                  _metricCard(
+
+                final metrics = <({
+                  String title,
+                  String value,
+                  Color accent,
+                  IconData icon,
+                })>[
+                  (
                     title: 'کل اعضا',
                     value: _formatInt(insights.totalMembers),
-                    subtitle: 'فعال ${_formatInt(insights.activeMembers)}',
-                    icon: Icons.people_alt_outlined,
                     accent: const Color(0xFF4FC3F7),
+                    icon: Icons.people_alt_outlined,
                   ),
-                  _metricCard(
-                    title: 'بدهی کل',
-                    value: _formatMoneyRial(insights.totalDebt),
-                    subtitle:
-                        '${_formatInt(insights.debtorMembers)} عضو بدهکار',
-                    icon: Icons.account_balance_wallet_outlined,
-                    accent: const Color(0xFFFF8A65),
-                  ),
-                  _metricCard(
-                    title: 'اعضای جدید ماه',
-                    value: _formatInt(insights.newMembersThisMonth),
-                    subtitle: 'بر پایه تاریخ صدور',
-                    icon: Icons.person_add_alt_1_outlined,
+                  (
+                    title: 'فعال',
+                    value: _formatInt(insights.activeMembers),
                     accent: const Color(0xFF80CBC4),
+                    icon: Icons.verified_user_outlined,
                   ),
-                  _metricCard(
+                  (
+                    title: 'بدهی',
+                    value: _formatMoneyRial(insights.totalDebt),
+                    accent: const Color(0xFFFF8A65),
+                    icon: Icons.account_balance_wallet_outlined,
+                  ),
+                  (
+                    title: 'جدید ماه',
+                    value: _formatInt(insights.newMembersThisMonth),
+                    accent: const Color(0xFFA5D6A7),
+                    icon: Icons.person_add_alt_1_outlined,
+                  ),
+                  (
                     title: 'بازرسی ماه',
                     value: loadingInsights && !snapshot.hasData
                         ? '...'
                         : (insights.inspectionsThisMonth == null
                             ? '—'
                             : _formatInt(insights.inspectionsThisMonth!)),
-                    subtitle: insights.inspectionsThisMonth == null
-                        ? 'نیازمند API تجمیعی'
-                        : 'انجام شده در این ماه',
-                    icon: Icons.fact_check_outlined,
                     accent: const Color(0xFF90CAF9),
+                    icon: Icons.fact_check_outlined,
                   ),
-                  _metricCard(
-                    title: 'دارای موقعیت',
-                    value: _formatInt(insights.withLocationCount),
-                    subtitle: 'آماده نمایش روی نقشه',
-                    icon: Icons.my_location_outlined,
-                    accent: const Color(0xFFA5D6A7),
-                  ),
-                  _metricCard(
-                    title: 'انقضای این ماه',
+                  (
+                    title: 'انقضا ماه',
                     value: _formatInt(insights.expiringThisMonth),
-                    subtitle: 'نیازمند پیگیری',
-                    icon: Icons.event_busy_outlined,
                     accent: const Color(0xFFFFCC80),
+                    icon: Icons.event_busy_outlined,
                   ),
                 ];
 
-                return LayoutBuilder(
-                  builder: (context, c) {
-                    final statWidth = c.maxWidth > 1080
-                        ? (c.maxWidth - 16) / 3
-                        : c.maxWidth > 720
-                            ? (c.maxWidth - 8) / 2
-                            : c.maxWidth;
-                    final unionInfo = <Widget>[
-                      _unionInfoLine(
-                        Icons.apartment_outlined,
-                        'نام اتحادیه',
-                        _co('name_co'),
-                      ),
-                      _unionInfoLine(
-                        Icons.category_outlined,
-                        'نوع اتحادیه',
-                        _co('lbl_type'),
-                      ),
-                      _unionInfoLine(
-                        Icons.qr_code_2_outlined,
-                        'کد اتحادیه',
-                        _u('code_co'),
-                      ),
-                      _unionInfoLine(
-                        Icons.call_outlined,
-                        'تماس اتحادیه',
-                        _co('tel1_co'),
-                      ),
-                    ];
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
                       children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10, vertical: 5),
-                                    decoration: BoxDecoration(
-                                      color:
-                                          Colors.white.withValues(alpha: 0.12),
-                                      borderRadius: BorderRadius.circular(999),
-                                      border: Border.all(
-                                        color: Colors.white
-                                            .withValues(alpha: 0.14),
-                                      ),
-                                    ),
-                                    child: const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          FluentIcons.data_trending_24_regular,
-                                          color: Colors.white70,
-                                          size: 15,
-                                        ),
-                                        SizedBox(width: 6),
-                                        Text(
-                                          'پنل اصلی',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 11.5,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    name.isEmpty ? '—' : name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 19,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: [
-                                      _chip(Icons.badge_outlined, roleText),
-                                      _chip(Icons.pin_outlined,
-                                          'کد کاربر: ${_u('id_user')}'),
-                                      _chip(Icons.devices_outlined,
-                                          'دستگاه: ${widget.deviceUuid}'),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: StreamBuilder<DateTime>(
-                                stream: _clockStream,
-                                initialData: DateTime.now(),
-                                builder: (context, snapshot) {
-                                  final now = snapshot.data ?? DateTime.now();
-                                  return Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Text(
-                                        _faDate(now),
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 10.5,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      Text(
-                                        _time(now),
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 13.5,
-                                          fontWeight: FontWeight.w800,
-                                          letterSpacing: 0.4,
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                },
-                              ),
-                            ),
-                            FilledButton.icon(
-                              onPressed: widget.busy ? null : widget.onLogout,
-                              icon: const Icon(Icons.logout, size: 16),
-                              label: const Text('خروج'),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: Colors.white,
-                                foregroundColor: const Color(0xFF1E3A5F),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.12),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: unionInfo,
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: stats
-                              .map(
-                                (e) => SizedBox(
-                                  width: statWidth,
-                                  child: e,
+                        Expanded(
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                name.isEmpty ? '—' : name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w900,
                                 ),
-                              )
-                              .toList(),
+                              ),
+                              _chip(Icons.badge_outlined, roleText),
+                              _chip(Icons.pin_outlined, _u('id_user')),
+                            ],
+                          ),
+                        ),
+                        StreamBuilder<DateTime>(
+                          stream: _clockStream,
+                          initialData: DateTime.now(),
+                          builder: (context, snap) {
+                            final now = snap.data ?? DateTime.now();
+                            return Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              child: Text(
+                                '${_faDate(now)}  ${_time(now)}',
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        FilledButton.icon(
+                          onPressed: widget.busy ? null : widget.onLogout,
+                          icon: const Icon(Icons.logout, size: 15),
+                          label: const Text('خروج'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: const Color(0xFF1E3A5F),
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            minimumSize: const Size(0, 30),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
                         ),
                       ],
-                    );
-                  },
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        _infoPill(Icons.apartment_outlined, _co('name_co')),
+                        _infoPill(Icons.category_outlined, _co('lbl_type')),
+                        _infoPill(Icons.qr_code_2_outlined, _u('code_co')),
+                        if (_co('tel1_co') != '—')
+                          _infoPill(Icons.call_outlined, _co('tel1_co')),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        for (var i = 0; i < metrics.length; i++) ...[
+                          if (i > 0) const SizedBox(width: 6),
+                          Expanded(
+                            child: _compactMetric(
+                              title: metrics[i].title,
+                              value: metrics[i].value,
+                              accent: metrics[i].accent,
+                              icon: metrics[i].icon,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
                 );
               },
             ),
@@ -1099,27 +1197,25 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
 
   Widget _chip(IconData icon, String text) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+        color: Colors.white.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, size: 14, color: Colors.white70),
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11.5,
-                fontWeight: FontWeight.w600,
-              ),
+          const SizedBox(width: 5),
+          Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w800,
             ),
           ),
         ],
@@ -1127,86 +1223,76 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
     );
   }
 
-  Widget _unionInfoLine(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
+  Widget _infoPill(IconData icon, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
-            child: Text(
-              '$label: ${value.isEmpty ? '—' : value}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11.7,
-                fontWeight: FontWeight.w600,
-              ),
+          Icon(icon, size: 14, color: Colors.white54),
+          const SizedBox(width: 5),
+          Text(
+            value.isEmpty ? '—' : value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(width: 8),
-          Icon(icon, size: 15, color: Colors.white60),
         ],
       ),
     );
   }
 
-  Widget _metricCard({
+  Widget _compactMetric({
     required String title,
     required String value,
-    required String subtitle,
-    required IconData icon,
     required Color accent,
+    required IconData icon,
   }) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: accent.withValues(alpha: 0.55)),
+        color: Colors.white.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.45)),
       ),
       child: Row(
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: accent, size: 18),
-          ),
-          const SizedBox(width: 10),
+          Icon(icon, color: accent, size: 20),
+          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 10.8, color: Colors.white70),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.white70,
+                    fontWeight: FontWeight.w700,
+                    height: 1.15,
+                  ),
                 ),
-                const SizedBox(height: 1),
                 Text(
                   value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 15.5,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
                     color: accent,
-                  ),
-                ),
-                Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 10.2,
-                    color: Colors.white54,
-                    fontWeight: FontWeight.w600,
+                    height: 1.2,
                   ),
                 ),
               ],

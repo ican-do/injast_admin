@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:injast_admin/file_management/hagh_ozviat_member_index.dart';
+import 'package:injast_admin/file_management/jalali_date_util.dart';
 import 'package:injast_admin/file_management/parvande_api.dart';
 import 'package:injast_admin/local_cache/parvande_profile_image.dart';
 import 'package:injast_admin/local_cache/sync_status.dart';
-import 'package:shamsi_date/shamsi_date.dart';
 
 /// کارت نمایش هر پرونده در شبکهٔ مدیریت پرونده‌ها.
 class ParvandeCard extends StatelessWidget {
@@ -33,6 +33,8 @@ class ParvandeCard extends StatelessWidget {
     this.preferServerImages = false,
     this.membershipIndex,
     this.membershipIndexLoaded = false,
+    this.shekayatCount = 0,
+    this.shekayatIndexLoaded = false,
   });
 
   final String codeCo;
@@ -58,9 +60,12 @@ class ParvandeCard extends StatelessWidget {
   final bool showEdit;
   final HaghOzviatMemberIndex? membershipIndex;
   final bool membershipIndexLoaded;
+  final int shekayatCount;
+  final bool shekayatIndexLoaded;
 
   static const _accent = Color(0xFF1E3A5F);
   static const _membershipActive = Color(0xFF6A1B9A);
+  static const _shekayatActive = Color(0xFFD32F2F);
 
   @override
   Widget build(BuildContext context) {
@@ -386,18 +391,8 @@ class ParvandeCard extends StatelessWidget {
   }
 
   String _toJalaliDate(String raw) {
-    if (raw.isEmpty || raw.toLowerCase() == 'null') return '—';
-    final normalized = raw.replaceAll('/', '-').split(' ').first.trim();
-    final parts = normalized.split('-');
-    if (parts.length != 3) return raw;
-    final y = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    final d = int.tryParse(parts[2]);
-    if (y == null || m == null || d == null) return raw;
-    final j = Gregorian(y, m, d).toJalali();
-    final mm = j.month.toString().padLeft(2, '0');
-    final dd = j.day.toString().padLeft(2, '0');
-    return '${j.year}/$mm/$dd';
+    final display = JalaliDateUtil.serverToDisplay(raw);
+    return display.isEmpty ? '—' : display;
   }
 
   _StatusStyle _statusStyle(String code) {
@@ -554,6 +549,51 @@ class ParvandeCard extends StatelessWidget {
     );
   }
 
+  Widget _compactShekayatBtn() {
+    final has = shekayatIndexLoaded && shekayatCount > 0;
+    final color = !shekayatIndexLoaded
+        ? _shekayatActive
+        : (has ? _shekayatActive : Colors.grey);
+    final label = has ? 'شکایت ($shekayatCount)' : 'شکایت';
+
+    return Material(
+      color: color.withValues(alpha: has || !shekayatIndexLoaded ? 0.08 : 0.04),
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onComplaint,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          height: 34,
+          padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: color.withValues(alpha: has || !shekayatIndexLoaded ? 0.22 : 0.12),
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(FluentIcons.warning_24_regular, size: 13, color: color),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: has ? 7.5 : 8.5,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                  height: 1.05,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _secondaryRow() {
     final items = <Widget?>[
       _compactBtn('تصاویر', FluentIcons.image_multiple_24_regular, onImages,
@@ -564,8 +604,7 @@ class ParvandeCard extends StatelessWidget {
           const Color(0xFF6D4C41)),
       _compactBtn('شریک', FluentIcons.people_team_24_regular, onPartners,
           const Color(0xFF455A64)),
-      _compactBtn('شکایت', FluentIcons.warning_24_regular, onComplaint,
-          const Color(0xFFD32F2F)),
+      _compactShekayatBtn(),
       if (showEdit)
         _compactBtn('ویرایش', FluentIcons.edit_24_regular, onEdit,
             const Color(0xFFEF6C00)),

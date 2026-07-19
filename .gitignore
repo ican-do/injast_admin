@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local Windows package / sample import data (not source)
+/windows-build/
+/windows-build.zip
+/file import/

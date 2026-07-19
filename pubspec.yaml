@@ -59,6 +59,9 @@ dependencies:
   excel2003:
     path: packages/excel2003_patched
   excel: ^4.0.6
+  pdf: ^3.11.3
+  printing: ^5.14.2
+  pie_chart: ^5.4.0
 
 dev_dependencies:
   flutter_test:

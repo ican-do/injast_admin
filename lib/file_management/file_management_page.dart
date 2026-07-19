@@ -21,6 +21,9 @@ import 'package:injast_admin/file_management/excel_import/excel_import_shenase.d
 import 'package:injast_admin/file_management/hagh_ozviat_api.dart';
 import 'package:injast_admin/file_management/hagh_ozviat_member_dialog.dart';
 import 'package:injast_admin/file_management/hagh_ozviat_member_index.dart';
+import 'package:injast_admin/file_management/parvande_shekayat_dialog.dart';
+import 'package:injast_admin/file_management/parvande_shekayat_index.dart';
+import 'package:injast_admin/features/shekayat/register_shekayat_page.dart';
 import 'package:injast_admin/import_sync/import_draft_store.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
 import 'package:injast_admin/local_cache/network_reachability.dart';
@@ -65,12 +68,13 @@ class _FileManagementPageState extends State<FileManagementPage> {
   bool _offlineData = false;
   bool _offlineMode = false;
   bool _togglingOffline = false;
-  String _tab = 'active'; // active | all | trash
-  ParvandeListSyncFilter _syncFilter = ParvandeListSyncFilter.all;
+  _HeaderListFilter _listFilter = _HeaderListFilter.all;
   AdvancedFilters _filters = AdvancedFilters();
   String? _sendingId;
   Map<String, HaghOzviatMemberIndex> _haghIndex = {};
   bool _haghIndexLoaded = false;
+  ParvandeShekayatIndex? _shekayatIndex;
+  bool _shekayatIndexLoaded = false;
 
   @override
   void initState() {
@@ -139,9 +143,12 @@ class _FileManagementPageState extends State<FileManagementPage> {
 
       if (!_offlineData) {
         await _loadHaghIndex();
+        await _loadShekayatIndex();
       } else {
         _haghIndex = {};
         _haghIndexLoaded = false;
+        _shekayatIndex = null;
+        _shekayatIndexLoaded = false;
       }
 
       if (kDebugMode) {
@@ -333,20 +340,34 @@ class _FileManagementPageState extends State<FileManagementPage> {
     );
   }
 
-  List<Map<String, dynamic>> get _baseByTab {
-    if (_tab == 'all') return _all;
-    if (_tab == 'trash') return _all.where((e) => e.isTrash).toList();
-    return _all.where((e) => e.isActive).toList();
+  List<Map<String, dynamic>> get _baseByFilter {
+    switch (_listFilter) {
+      case _HeaderListFilter.trash:
+        return _all.where((e) => e.isTrash).toList();
+      case _HeaderListFilter.dirty:
+        return _all
+            .where((e) => e.isActive && e.cacheSyncStatus == ParvandeSyncStatus.dirty)
+            .toList();
+      case _HeaderListFilter.synced:
+        return _all
+            .where((e) => e.isActive && e.cacheSyncStatus == ParvandeSyncStatus.synced)
+            .toList();
+      case _HeaderListFilter.localNew:
+        return _all
+            .where((e) => e.isActive && e.cacheSyncStatus == ParvandeSyncStatus.local)
+            .toList();
+      case _HeaderListFilter.withShekayat:
+        return _all
+            .where((e) => e.isActive && _shekayatCountFor(e) > 0)
+            .toList();
+      case _HeaderListFilter.all:
+        return _all.where((e) => e.isActive).toList();
+    }
   }
 
   List<Map<String, dynamic>> get _visible {
     final q = _searchCtrl.text.trim().toLowerCase();
-    var filtered = _filters.apply(_baseByTab);
-    final wantStatus = _syncFilter.statusOrNull;
-    if (wantStatus != null) {
-      filtered =
-          filtered.where((p) => p.cacheSyncStatus == wantStatus).toList();
-    }
+    var filtered = _filters.apply(_baseByFilter);
     if (q.isEmpty) return filtered;
     return filtered.where((p) {
       final bag = [
@@ -358,15 +379,20 @@ class _FileManagementPageState extends State<FileManagementPage> {
         p.codeMeli,
         p.codePosti,
         p.numParvande,
+        p.shenase,
       ].join(' ').toLowerCase();
       return bag.contains(q);
     }).toList();
   }
 
   int get _trashCount => _all.where((e) => e.isTrash).length;
+  int get _activeCount => _all.where((e) => e.isActive).length;
+  int get _withShekayatCount =>
+      _all.where((e) => e.isActive && _shekayatCountFor(e) > 0).length;
 
-  int _syncCount(ParvandeSyncStatus status) =>
-      _all.where((e) => e.cacheSyncStatus == status).length;
+  int _syncCount(ParvandeSyncStatus status) => _all
+      .where((e) => e.isActive && e.cacheSyncStatus == status)
+      .length;
 
   Future<void> _refreshSyncStatusOnList() async {
     _all = await _cacheList.mergeSyncStatusFromCache(widget.codeCo, _all);
@@ -882,6 +908,69 @@ class _FileManagementPageState extends State<FileManagementPage> {
     }
   }
 
+  Future<void> _loadShekayatIndex() async {
+    try {
+      final index = await ParvandeShekayatIndex.load(widget.codeCo);
+      if (!mounted) return;
+      setState(() {
+        _shekayatIndex = index;
+        _shekayatIndexLoaded = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _shekayatIndex = null;
+        _shekayatIndexLoaded = true;
+      });
+    }
+  }
+
+  int _shekayatCountFor(Map<String, dynamic> p) =>
+      _shekayatIndex?.countFor(p.idParvandeh) ?? 0;
+
+  Future<void> _openComplaint(Map<String, dynamic> p) async {
+    final count = _shekayatCountFor(p);
+    final list = _shekayatIndex?.complaintsFor(p.idParvandeh) ?? const [];
+
+    if (count > 0) {
+      await showParvandeShekayatDialog(
+        context: context,
+        codeCo: widget.codeCo,
+        parvande: p,
+        complaints: list,
+        currentUserId: widget.currentUserId,
+        currentUser: {
+          if (widget.currentUserId != null) 'id_user': widget.currentUserId,
+          if (widget.currentUserName != null) 'name_user': widget.currentUserName,
+          if (widget.currentUserType != null) 'type_user': widget.currentUserType,
+          'code_co': widget.codeCo,
+        },
+      );
+      if (!mounted) return;
+      if (!_offlineData) await _loadShekayatIndex();
+      return;
+    }
+
+    // بدون شکایت: ثبت شکایت جدید با پیش‌پر کردن واحد
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RegisterShekayatPage(
+          codeCo: widget.codeCo,
+          currentUserId: widget.currentUserId,
+          currentUser: {
+            if (widget.currentUserId != null) 'id_user': widget.currentUserId,
+            if (widget.currentUserName != null) 'name_user': widget.currentUserName,
+            if (widget.currentUserType != null) 'type_user': widget.currentUserType,
+            'code_co': widget.codeCo,
+          },
+          prefillStore: p,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (!_offlineData) await _loadShekayatIndex();
+  }
+
   HaghOzviatMemberIndex? _haghFor(Map<String, dynamic> p) {
     final key = ExcelImportShenase.normalize(p.shenase);
     if (key.isEmpty) return null;
@@ -929,12 +1018,7 @@ class _FileManagementPageState extends State<FileManagementPage> {
         onLicense: () => _openLicense(p),
         onDocuments: () => _openDocuments(p),
         onPartners: () => _openPartners(p),
-        onComplaint: () => _openPlaceholder(
-          'ثبت شکایت',
-          FluentIcons.warning_24_regular,
-          const Color(0xFFD32F2F),
-          p,
-        ),
+        onComplaint: () => _openComplaint(p),
         showEdit: _canEditParvande,
         onEdit: () => _openEdit(p),
       ),
@@ -1013,141 +1097,159 @@ class _FileManagementPageState extends State<FileManagementPage> {
 
   Widget _headerSection(int visibleCount) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Expanded(
-                  child:
-                      _countChip('کل', _all.length, const Color(0xFF455A64))),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: _countChip(
-                      'فعال',
-                      _all.where((e) => e.isActive).length,
-                      const Color(0xFF2E7D32))),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: _countChip(
-                      'نمایش', visibleCount, const Color(0xFF1E3A5F))),
-              const SizedBox(width: 8),
-              _trashButton(),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _searchCtrl,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    hintText: 'جستجوی سریع: نام، واحد، رسته، موبایل...',
-                    prefixIcon: const Icon(Icons.search),
-                    isDense: true,
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10)),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
+      child: SizedBox(
+        height: 42,
+        child: Row(
+          children: [
+            _headerIconBtn(
+              tooltip: 'سطل زباله',
+              onPressed: _openTrashSheet,
+              icon: FluentIcons.delete_24_regular,
+              badge: _trashCount,
+              color: const Color(0xFFC62828),
+            ),
+            const SizedBox(width: 4),
+            _headerIconBtn(
+              tooltip: 'جستجوی حرفه‌ای',
+              onPressed: _openAdvancedSearch,
+              icon: FluentIcons.filter_24_regular,
+              badge: _filters.isEmpty ? 0 : 1,
+              color: const Color(0xFF1E3A5F),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 3,
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 13),
+                decoration: InputDecoration(
+                  hintText: 'جستجو: نام، واحد، رسته، موبایل، کد صنفی...',
+                  hintStyle: const TextStyle(fontSize: 12.5),
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFFDDE5EF)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFFDDE5EF)),
                   ),
                 ),
               ),
-              const SizedBox(width: 6),
-              IconButton.filledTonal(
-                tooltip: 'جستجوی حرفه‌ای',
-                onPressed: _openAdvancedSearch,
-                icon: Badge(
-                  isLabelVisible: !_filters.isEmpty,
-                  label: const Text('!'),
-                  child: const Icon(FluentIcons.filter_24_regular),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _listFilterChip(
+                      _HeaderListFilter.all,
+                      'همه',
+                      _activeCount,
+                      const Color(0xFF1E3A5F),
+                    ),
+                    _listFilterChip(
+                      _HeaderListFilter.trash,
+                      'سطل',
+                      _trashCount,
+                      const Color(0xFFC62828),
+                    ),
+                    _listFilterChip(
+                      _HeaderListFilter.dirty,
+                      'بروزرسانی‌شده',
+                      _syncCount(ParvandeSyncStatus.dirty),
+                      ParvandeSyncStatus.dirty.color,
+                    ),
+                    _listFilterChip(
+                      _HeaderListFilter.synced,
+                      'ارسال‌شده',
+                      _syncCount(ParvandeSyncStatus.synced),
+                      ParvandeSyncStatus.synced.color,
+                    ),
+                    _listFilterChip(
+                      _HeaderListFilter.localNew,
+                      'جدید',
+                      _syncCount(ParvandeSyncStatus.local),
+                      ParvandeSyncStatus.local.color,
+                    ),
+                    _listFilterChip(
+                      _HeaderListFilter.withShekayat,
+                      'دارای شکایت',
+                      _withShekayatCount,
+                      const Color(0xFFD32F2F),
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _tabBtn('active', 'فعال'),
-              const SizedBox(width: 6),
-              _tabBtn('all', 'همه'),
-              const SizedBox(width: 6),
-              _tabBtn('trash', 'سطل'),
-            ],
-          ),
-          const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _syncFilterChip(ParvandeListSyncFilter.all, _all.length),
-                const SizedBox(width: 6),
-                _syncFilterChip(
-                  ParvandeListSyncFilter.localNew,
-                  _syncCount(ParvandeSyncStatus.local),
-                ),
-                const SizedBox(width: 6),
-                _syncFilterChip(
-                  ParvandeListSyncFilter.synced,
-                  _syncCount(ParvandeSyncStatus.synced),
-                ),
-                const SizedBox(width: 6),
-                _syncFilterChip(
-                  ParvandeListSyncFilter.dirty,
-                  _syncCount(ParvandeSyncStatus.dirty),
-                ),
-              ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _syncFilterChip(ParvandeListSyncFilter filter, int count) {
-    final active = _syncFilter == filter;
-    final status = filter.statusOrNull;
-    final color = status?.color ?? const Color(0xFF455A64);
-    return FilterChip(
-      label: Text('${filter.label} ($count)'),
-      selected: active,
-      onSelected: (_) => setState(() => _syncFilter = filter),
-      selectedColor: color.withValues(alpha: 0.2),
-      checkmarkColor: color,
-      labelStyle: TextStyle(
-        fontWeight: FontWeight.w700,
-        color: active ? color : Colors.black87,
-        fontSize: 12,
+  Widget _headerIconBtn({
+    required String tooltip,
+    required VoidCallback onPressed,
+    required IconData icon,
+    required Color color,
+    int badge = 0,
+  }) {
+    final btn = IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      visualDensity: VisualDensity.compact,
+      style: IconButton.styleFrom(
+        backgroundColor: color.withValues(alpha: 0.1),
+        foregroundColor: color,
+        minimumSize: const Size(38, 38),
+        maximumSize: const Size(38, 38),
+        padding: EdgeInsets.zero,
       ),
-      side: BorderSide(color: active ? color : const Color(0xFFDDE5EF)),
+      icon: Icon(icon, size: 18),
     );
-  }
-
-  Widget _countChip(String title, int value, Color c) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-              child: Text(title,
-                  style: const TextStyle(fontWeight: FontWeight.w700))),
-          Text('$value',
-              style: TextStyle(fontWeight: FontWeight.w800, color: c)),
-        ],
-      ),
-    );
-  }
-
-  Widget _trashButton() {
+    if (badge <= 0) return btn;
     return Badge(
-      isLabelVisible: _trashCount > 0,
-      label: Text('$_trashCount'),
-      child: IconButton.filled(
-        tooltip: 'سطل زباله',
-        onPressed: _openTrashSheet,
-        icon: const Icon(FluentIcons.delete_24_regular),
+      label: Text('$badge', style: const TextStyle(fontSize: 10)),
+      child: btn,
+    );
+  }
+
+  Widget _listFilterChip(
+    _HeaderListFilter filter,
+    String label,
+    int count,
+    Color color,
+  ) {
+    final active = _listFilter == filter;
+    return Padding(
+      padding: const EdgeInsetsDirectional.only(end: 6),
+      child: FilterChip(
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        label: Text(
+          '$label ($count)',
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 11.5,
+            color: active ? color : Colors.black87,
+          ),
+        ),
+        selected: active,
+        onSelected: (_) => setState(() => _listFilter = filter),
+        selectedColor: color.withValues(alpha: 0.18),
+        checkmarkColor: color,
+        side: BorderSide(color: active ? color : const Color(0xFFDDE5EF)),
       ),
     );
   }
@@ -1161,20 +1263,6 @@ class _FileManagementPageState extends State<FileManagementPage> {
     );
   }
 
-  Widget _tabBtn(String value, String title) {
-    final active = _tab == value;
-    return Expanded(
-      child: FilledButton.tonal(
-        onPressed: () => setState(() => _tab = value),
-        style: FilledButton.styleFrom(
-          backgroundColor: active ? const Color(0xFF1E3A5F) : null,
-          foregroundColor: active ? Colors.white : null,
-        ),
-        child: Text(title),
-      ),
-    );
-  }
-
   Widget _buildCard(Map<String, dynamic> p) {
     final sending = _sendingId == p.idParvandeh;
     final hagh = _haghFor(p);
@@ -1183,6 +1271,8 @@ class _FileManagementPageState extends State<FileManagementPage> {
       parvande: p,
       membershipIndex: hagh,
       membershipIndexLoaded: _haghIndexLoaded,
+      shekayatCount: _shekayatCountFor(p),
+      shekayatIndexLoaded: _shekayatIndexLoaded,
       preferServerImages: !_offlineData,
       isSendingToServer: sending,
       onSendToServer: p.isInLocalCache ? () => _sendOneToServer(p) : null,
@@ -1200,14 +1290,18 @@ class _FileManagementPageState extends State<FileManagementPage> {
       onLicense: () => _openLicense(p),
       onDocuments: () => _openDocuments(p),
       onPartners: () => _openPartners(p),
-      onComplaint: () => _openPlaceholder(
-        'ثبت شکایت',
-        FluentIcons.warning_24_regular,
-        const Color(0xFFD32F2F),
-        p,
-      ),
+      onComplaint: () => _openComplaint(p),
       showEdit: _canEditParvande,
       onEdit: () => _openEdit(p),
     );
   }
+}
+
+enum _HeaderListFilter {
+  all,
+  trash,
+  dirty,
+  synced,
+  localNew,
+  withShekayat,
 }
