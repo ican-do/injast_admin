@@ -1,5 +1,6 @@
 import 'dart:developer' show log;
 
+import 'package:injast_admin/import_sync/asnaf_op_log.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
 import 'package:injast_admin/import_sync/import_sync_api.dart';
 import 'package:injast_admin/local_cache/parvande_sync_service.dart';
@@ -62,6 +63,10 @@ class ParvandeServerSend {
       (r) => (r.payload['_import_mode'] ?? '').toString().trim().toLowerCase() == 'debt_only',
     );
 
+    AsnafOpLog.line(
+      AsnafOpLog.send,
+      'شروع | n=${records.length} debtOnly=$debtOnlySession codeCo=$codeCo skipImages=$skipImagePreparation',
+    );
     onProgress?.call(
       ParvandeServerSendProgress(
         message: 'شروع نشست ارسال (${records.length} پرونده)…',
@@ -76,6 +81,7 @@ class ParvandeServerSend {
       totalRecords: records.length,
       debtSyncOnly: debtOnlySession,
     );
+    AsnafOpLog.line(AsnafOpLog.send, 'نشست ساخته شد | id=${session.sessionId}');
     if (verboseLog) {
       // ignore: avoid_print
       log(
@@ -151,6 +157,10 @@ class ParvandeServerSend {
           phase: 'batch',
         ),
       );
+      AsnafOpLog.line(
+        AsnafOpLog.send,
+        'آپلود دسته ${i + 1}/${chunks.length} | n=${chunks[i].length}',
+      );
       await _syncApi.uploadBatch(
         sessionId: session.sessionId,
         chunkIndex: i + 1,
@@ -179,9 +189,15 @@ class ParvandeServerSend {
       ),
     );
 
+    AsnafOpLog.line(AsnafOpLog.send, 'نهایی‌سازی نشست ${session.sessionId}…');
     final fin = await _syncApi.finalizeSession(
       session.sessionId,
       verboseLog: verboseLog,
+    );
+    AsnafOpLog.line(
+      AsnafOpLog.send,
+      'نهایی شد | inserted=${fin.inserted} skipped=${fin.skipped} '
+      'docs=${fin.docsInserted} failed=${fin.failed} sentIds=${sentIds.length}',
     );
 
     if (sentIds.isNotEmpty) {

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
 import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
+import 'package:injast_admin/import_sync/asnaf_op_log.dart';
 
 /// دانلود فایل (CSV/Excel و …) از لینک‌های داخل WebView اصناف.
 class AsnafWebViewDownload {
@@ -85,12 +86,24 @@ class AsnafWebViewDownload {
     String? contentDisposition,
     String? jwtToken,
   }) async {
-    if (kIsWeb) return null;
+    if (kIsWeb) {
+      AsnafOpLog.line(AsnafOpLog.download, 'دانلود روی وب پشتیبانی نمی‌شود');
+      return null;
+    }
+
+    AsnafOpLog.line(
+      AsnafOpLog.download,
+      'شروع | url=${AsnafOpLog.clip(url.toString())} mime=$mimeType file=$suggestedFilename',
+    );
 
     final cookieManager = CookieManager.instance();
     final cookies = await cookieManager.getCookies(url: url);
     final cookieHeader =
         cookies.map((c) => '${c.name}=${c.value}').join('; ');
+    AsnafOpLog.line(
+      AsnafOpLog.download,
+      'کوکی=${cookies.length} jwt=${(jwtToken ?? '').trim().isEmpty ? 'خیر' : 'بله'}',
+    );
 
     final headers = <String, String>{
       'Accept': '*/*',
@@ -109,6 +122,10 @@ class AsnafWebViewDownload {
         .get(url, headers: headers)
         .timeout(const Duration(minutes: 3));
 
+    AsnafOpLog.line(
+      AsnafOpLog.download,
+      'HTTP ${res.statusCode} bytes=${res.bodyBytes.length}',
+    );
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('دانلود ناموفق (${res.statusCode})');
     }
@@ -128,13 +145,17 @@ class AsnafWebViewDownload {
       bytes: res.bodyBytes,
     );
 
-    if (savePath == null || savePath.isEmpty) return null;
+    if (savePath == null || savePath.isEmpty) {
+      AsnafOpLog.line(AsnafOpLog.download, 'ذخیره لغو شد (دیالوگ فایل)');
+      return null;
+    }
     if (res.bodyBytes.isNotEmpty) {
       final f = File(savePath);
       if (!await f.exists() || await f.length() == 0) {
         await f.writeAsBytes(res.bodyBytes, flush: true);
       }
     }
+    AsnafOpLog.line(AsnafOpLog.download, 'ذخیره شد | $savePath');
     return savePath;
   }
 }

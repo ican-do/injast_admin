@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// Snapshot لحظه‌ای وضعیت عملیات — در هر pulse استریم دوباره خوانده می‌شود.
 class AsnafLiveOperationSnapshot {
@@ -110,6 +111,16 @@ class AsnafLiveOperationDialog extends StatelessWidget {
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
+                      IconButton(
+                        tooltip: 'کپی لاگ',
+                        onPressed: s.logs.isEmpty
+                            ? null
+                            : () async {
+                                final text = s.logs.reversed.join('\n');
+                                await Clipboard.setData(ClipboardData(text: text));
+                              },
+                        icon: const Icon(Icons.copy, size: 20),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 8),

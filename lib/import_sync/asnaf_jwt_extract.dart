@@ -69,16 +69,60 @@ class AsnafJwtExtract {
 
   /// `raw` خروجی `evaluateJavascript`.
   static String? parseTokenFromJsResult(dynamic raw) {
-    if (raw == null) return null;
+    final d = diagnoseJsResult(raw);
+    if (d.expired || d.token == null || d.token!.isEmpty) return null;
+    return d.token;
+  }
+
+  /// برای لاگ تست: تعداد توکن، انقضا، خطای پارس — بدون خود JWT.
+  static AsnafJwtExtractDiag diagnoseJsResult(dynamic raw) {
+    if (raw == null) {
+      return const AsnafJwtExtractDiag(foundCount: 0, note: 'js_null');
+    }
     try {
-      final decoded = jsonDecode(raw.toString());
-      if (decoded is! Map) return null;
+      dynamic decoded = raw;
+      if (raw is String) {
+        decoded = jsonDecode(raw);
+        if (decoded is String) {
+          decoded = jsonDecode(decoded);
+        }
+      }
+      if (decoded is! Map) {
+        return AsnafJwtExtractDiag(
+          foundCount: 0,
+          note: 'js_not_map:${decoded.runtimeType}',
+        );
+      }
+      final count = int.tryParse(decoded['count']?.toString() ?? '') ?? 0;
       final token = decoded['token']?.toString().trim() ?? '';
-      if (token.isEmpty) return null;
-      if (AsnafJwtPolicy.isExpired(token)) return null;
-      return token;
-    } catch (_) {
-      return null;
+      if (token.isEmpty) {
+        return AsnafJwtExtractDiag(foundCount: count, note: 'token_empty');
+      }
+      if (AsnafJwtPolicy.isExpired(token)) {
+        return AsnafJwtExtractDiag(
+          foundCount: count,
+          token: token,
+          expired: true,
+          note: 'token_expired',
+        );
+      }
+      return AsnafJwtExtractDiag(foundCount: count, token: token, note: 'ok');
+    } catch (e) {
+      return AsnafJwtExtractDiag(foundCount: 0, note: 'parse_error:$e');
     }
   }
+}
+
+class AsnafJwtExtractDiag {
+  const AsnafJwtExtractDiag({
+    required this.foundCount,
+    this.token,
+    this.expired = false,
+    this.note = '',
+  });
+
+  final int foundCount;
+  final String? token;
+  final bool expired;
+  final String note;
 }

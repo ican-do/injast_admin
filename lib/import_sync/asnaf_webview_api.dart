@@ -3,54 +3,269 @@ import 'dart:convert';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:injast_admin/import_sync/asnaf_api_throttle.dart';
 import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
+import 'package:injast_admin/import_sync/asnaf_op_log.dart';
 
-/// درخواست GET به API اصناف از داخل WebView (همان کوکی/سشن مرورگر داخلی).
+/// درخواست GET به API اصناف از داخل WebView.
+///
+/// پنل Angular با XHR به apinovin و هدر JWT (بدون cookie credentials) ۲۰۰ می‌گیرد.
+/// `withCredentials: true` روی WKWebView همان درخواست را CORS/status=0 می‌کند.
 class AsnafWebViewApi {
   AsnafWebViewApi(this._controller);
 
   final InAppWebViewController _controller;
 
+  static const networkHookSource = r'''
+(function() {
+  if (window.__asnafHooked) return;
+  window.__asnafHooked = true;
+  window.__asnafNet = [];
+  function rec(kind, url, status, body, headerNames) {
+    try {
+      var u = String(url || '');
+      var keep = status >= 200 && status < 300 && /parvaneh|\/docs|apinovin|raste|token/i.test(u);
+      window.__asnafNet.push({
+        kind: kind,
+        url: u,
+        status: status,
+        t: Date.now(),
+        headers: headerNames || [],
+        body: keep ? String(body || '').slice(0, 1500000) : ''
+      });
+      if (window.__asnafNet.length > 80) window.__asnafNet.shift();
+      if (/parvaneh|\/docs|apinovin|raste|token/i.test(u)) {
+        console.log('[AsnafNet] ' + kind + ' ' + status + ' ' + u + ' hdr=' + (headerNames || []).join(','));
+      }
+    } catch (e) {}
+  }
+  var ofetch = window.fetch;
+  if (typeof ofetch === 'function') {
+    window.fetch = function(input, init) {
+      var url = (typeof input === 'string') ? input : (input && input.url);
+      return ofetch.apply(this, arguments).then(function(res) {
+        rec('fetch', url, res.status, '', []);
+        return res;
+      });
+    };
+  }
+  var open = XMLHttpRequest.prototype.open;
+  var send = XMLHttpRequest.prototype.send;
+  var setHeader = XMLHttpRequest.prototype.setRequestHeader;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    this.__asnafUrl = url;
+    this.__asnafHdr = [];
+    return open.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+    this.__asnafHdr = this.__asnafHdr || [];
+    this.__asnafHdr.push(String(k));
+    return setHeader.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function() {
+    var xhr = this;
+    xhr.addEventListener('loadend', function() {
+      rec('xhr', xhr.__asnafUrl, xhr.status, xhr.responseText, xhr.__asnafHdr);
+    });
+    return send.apply(this, arguments);
+  };
+})();
+''';
+
+  Future<String> collectCookieHeader() async {
+    final mgr = CookieManager.instance();
+    final map = <String, String>{};
+    try {
+      final all = await mgr.getAllCookies();
+      final names = <String>[];
+      for (final c in all) {
+        final domain = (c.domain ?? '').toLowerCase();
+        if (domain.contains('iranianasnaf') || domain.contains('apinovin')) {
+          map[c.name] = c.value;
+          names.add('${c.name}@${c.domain ?? ''}');
+        }
+      }
+      AsnafOpLog.line(
+        AsnafOpLog.api,
+        'allCookies n=${all.length} asnaf=${map.length} | ${names.join(', ')}',
+      );
+    } catch (e) {
+      AsnafOpLog.line(AsnafOpLog.api, 'getAllCookies خطا: $e');
+    }
+    return map.entries.map((e) => '${e.key}=${e.value}').join('; ');
+  }
+
   Future<dynamic> getJson(String url, String token) async {
     await AsnafApiThrottle.instance.waitTurn();
-    // باید در همان JavaScript world صفحهٔ پنل اجرا شود؛ وگرنه fetch به apinovin → Load failed (CORS).
-    final result = await _controller.callAsyncJavaScript(
-      functionBody: r'''
-        const headers = {
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
-        };
-        if (token) headers['Authorization'] = 'JWT ' + token;
-        const res = await fetch(apiUrl, {
-          method: 'GET',
-          credentials: 'include',
-          headers,
-        });
-        return { status: res.status, body: await res.text() };
-      ''',
-      arguments: {
-        'apiUrl': url,
-        'token': token,
-      },
+
+    final cached = await _capturedBodyFor(url);
+    if (cached != null) {
+      AsnafOpLog.line(
+        AsnafOpLog.api,
+        'استفاده از پاسخ ذخیره‌شده پنل | ${AsnafOpLog.shortUrl(url)} len=${cached.length}',
+      );
+      return jsonDecode(cached);
+    }
+
+    final candidates = _candidateUrls(url);
+    AsnafOpLog.line(
+      AsnafOpLog.api,
+      'کاندیدها n=${candidates.length} | ${candidates.map(AsnafOpLog.shortUrl).join(' , ')}',
+    );
+
+    Object? lastError;
+    for (final candidate in candidates) {
+      try {
+        final value = await _pageXhrGet(candidate, token);
+        final status = _toInt(value['status']);
+        final body = value['body']?.toString() ?? '';
+        AsnafOpLog.line(
+          AsnafOpLog.api,
+          'XHR-page ${AsnafOpLog.shortUrl(candidate)} | status=$status '
+          'via=${value['via']} body_len=${body.length} err=${value['error'] ?? ''}',
+        );
+        if (status >= 200 && status < 300 && body.isNotEmpty) {
+          return jsonDecode(body);
+        }
+        if (status == 401 || status == 403) {
+          lastError = AsnafApiAuthException(status, candidate, fromWebView: true);
+          continue;
+        }
+        lastError = Exception('API error $status for $candidate');
+      } catch (e) {
+        lastError = e;
+        AsnafOpLog.line(
+          AsnafOpLog.api,
+          'XHR-page exception ${AsnafOpLog.shortUrl(candidate)} | $e',
+        );
+      }
+    }
+    if (lastError is AsnafApiAuthException) throw lastError;
+    throw lastError ?? Exception('WebView XHR failed for $url');
+  }
+
+  List<String> _candidateUrls(String url) {
+    final out = <String>[];
+    void add(String u) {
+      final t = u.trim();
+      if (t.isEmpty || out.contains(t)) return;
+      out.add(t);
+    }
+
+    add(url);
+    try {
+      final parsed = Uri.parse(url);
+      if (parsed.host.contains('apinovin') || parsed.host.isEmpty) {
+        final page = parsed.queryParameters['page'] ?? '1';
+        final path = parsed.path;
+        if (path.endsWith('/parvaneh/') || path == '/parvaneh/') {
+          add('https://apinovin.iranianasnaf.ir/parvaneh/?page=$page&management=True');
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  Future<String?> _capturedBodyFor(String url) async {
+    final urlJson = jsonEncode(url);
+    try {
+      final raw = await _controller.evaluateJavascript(
+        source: '''
+(function() {
+  function abs(u) {
+    try { return new URL(u, location.href); } catch (e) { return null; }
+  }
+  var want = abs($urlJson);
+  if (!want) return JSON.stringify({body: ''});
+  var list = window.__asnafNet || [];
+  for (var i = list.length - 1; i >= 0; i--) {
+    var x = list[i];
+    if (x.status != 200 || !x.body) continue;
+    var got = abs(x.url);
+    if (!got || got.pathname !== want.pathname) continue;
+    var wp = want.searchParams.get('page');
+    var gp = got.searchParams.get('page');
+    if (wp && gp && wp !== gp) continue;
+    return JSON.stringify({body: x.body});
+  }
+  return JSON.stringify({body: ''});
+})();
+''',
+        contentWorld: ContentWorld.PAGE,
+      );
+      if (raw == null) return null;
+      var decoded = jsonDecode(raw.toString());
+      if (decoded is String) {
+        try {
+          decoded = jsonDecode(decoded);
+        } catch (_) {}
+      }
+      if (decoded is! Map) return null;
+      final text = decoded['body']?.toString() ?? '';
+      if (text.isEmpty) return null;
+      return text;
+    } catch (e) {
+      AsnafOpLog.line(AsnafOpLog.api, 'خواندن body ذخیره‌شده خطا: $e');
+      return null;
+    }
+  }
+
+  /// XHR داخل همان JS پنل (evaluateJavascript)، نه callAsyncJavaScript.
+  Future<Map<String, dynamic>> _pageXhrGet(String url, String token) async {
+    final urlJson = jsonEncode(url);
+    final tokenJson = jsonEncode(token);
+    final started = await _controller.evaluateJavascript(
+      source: '''
+(function() {
+  var url = $urlJson;
+  var token = $tokenJson;
+  window.__asnafJobs = window.__asnafJobs || {};
+  var id = 'j' + Date.now() + '_' + Math.random().toString(16).slice(2);
+  window.__asnafJobs[id] = { done: false };
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', url, true);
+  xhr.withCredentials = false;
+  if (token) xhr.setRequestHeader('Authorization', 'JWT ' + token);
+  xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
+  xhr.onload = function() {
+    window.__asnafJobs[id] = {
+      done: true, status: xhr.status, body: xhr.responseText || '', via: 'xhr-page'
+    };
+  };
+  xhr.onerror = function() {
+    window.__asnafJobs[id] = {
+      done: true, status: 0, error: 'xhr_error', body: '', via: 'xhr-page'
+    };
+  };
+  xhr.send();
+  return id;
+})();
+''',
       contentWorld: ContentWorld.PAGE,
     );
-    if (result == null || result.error != null) {
-      throw Exception(
-        'WebView fetch failed: ${result?.error?.toString() ?? 'no result'}',
+    var id = started?.toString() ?? '';
+    id = id.replaceAll('"', '');
+    if (id.isEmpty || id == 'null') {
+      return {'status': 0, 'error': 'job_id_empty', 'via': 'xhr-page'};
+    }
+
+    for (var i = 0; i < 80; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      final raw = await _controller.evaluateJavascript(
+        source: 'JSON.stringify(window.__asnafJobs[${jsonEncode(id)}] || {done:false})',
+        contentWorld: ContentWorld.PAGE,
       );
+      if (raw == null) continue;
+      var decoded = jsonDecode(raw.toString());
+      if (decoded is String) {
+        try {
+          decoded = jsonDecode(decoded);
+        } catch (_) {}
+      }
+      if (decoded is! Map) continue;
+      if (decoded['done'] == true) {
+        return Map<String, dynamic>.from(decoded);
+      }
     }
-    final value = result.value;
-    if (value is! Map) {
-      throw Exception('WebView fetch unexpected result: $value');
-    }
-    final status = _toInt(value['status']);
-    final body = value['body']?.toString() ?? '';
-    if (status >= 200 && status < 300) {
-      return jsonDecode(body);
-    }
-    if (status == 401 || status == 403) {
-      throw AsnafApiAuthException(status, url);
-    }
-    throw Exception('API error $status for $url');
+    return {'status': 0, 'error': 'timeout', 'via': 'xhr-page'};
   }
 
   static int _toInt(dynamic v) => int.tryParse(v?.toString() ?? '') ?? 0;

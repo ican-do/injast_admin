@@ -1,8 +1,9 @@
 import 'dart:async';
-import 'dart:developer' as developer;
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:injast_admin/asnaf_live_operation_dialog.dart';
 import 'package:injast_admin/file_management/address_geocoding_service.dart';
@@ -12,13 +13,12 @@ import 'package:injast_admin/import_sync/asnaf_fetch_pace.dart';
 import 'package:injast_admin/import_sync/asnaf_human_pace.dart';
 import 'package:injast_admin/import_sync/asnaf_jwt_extract.dart';
 import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
+import 'package:injast_admin/import_sync/asnaf_op_log.dart';
 import 'package:injast_admin/import_sync/asnaf_recovery_store.dart';
 import 'package:injast_admin/import_sync/asnaf_webview_api.dart';
 import 'package:injast_admin/import_sync/asnaf_webview_download.dart';
 import 'package:injast_admin/import_sync/import_draft_store.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
-import 'package:injast_admin/local_cache/network_reachability.dart';
-import 'package:injast_admin/local_cache/offline_mode_prefs.dart';
 import 'package:injast_admin/local_cache/parvande_server_send.dart';
 import 'package:injast_admin/local_cache/sync_status.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -62,7 +62,6 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   late final ImportDraftStore _draftStore;
   final _stateStore = AsnafRecoveryStore();
   final _firstFiveTestReportStore = AsnafFirstFiveTestReportStore();
-  final _offlinePrefs = OfflineModePrefs();
 
   bool _busy = false;
   bool _stopRequested = false;
@@ -72,7 +71,6 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   int _totalCount = 0;
   int _draftCount = 0;
   int _pendingSendCount = 0;
-  bool _offlineMode = false;
   ParvandeSyncCounts? _syncCounts;
   String _operationStatus = 'منتظر لاگین به وب سایت';
 
@@ -99,10 +97,20 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   void initState() {
     super.initState();
     _liveUiStream = StreamController<void>.broadcast();
+    AsnafOpLog.uiSink = _onOpLogEntry;
     _draftStore = ImportDraftStore(widget.codeCo);
     unawaited(_loadState());
     unawaited(_refreshFirstFiveTestReportFlag());
     unawaited(_purgeExpiredJwtOnOpen());
+    AsnafOpLog.line(
+      AsnafOpLog.site,
+      'صفحه باز شد | user=${widget.userName} code=${widget.userCode} '
+      'union=${widget.unionName} codeCo=${widget.codeCo} web=$kIsWeb',
+    );
+    AsnafOpLog.line(
+      AsnafOpLog.site,
+      'چک‌لیست تست: LOGIN → TOKEN → بروزرسانی (تست۵ / جدیدترین / کامل) → DRAFT → SEND',
+    );
   }
 
   Future<void> _purgeExpiredJwtOnOpen() async {
@@ -110,7 +118,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     if (t.isEmpty) return;
     if (!AsnafJwtPolicy.isExpired(t)) return;
     await _stateStore.clearJwt();
-    _appendLog('Expired JWT removed on page open.');
+    AsnafOpLog.line(AsnafOpLog.token, 'توکن منقضی هنگام باز شدن صفحه پاک شد');
     if (mounted) {
       setState(() => _operationStatus = 'توکن منقضی پاک شد — در WebView دوباره لاگین کنید');
     }
@@ -118,6 +126,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   @override
   void dispose() {
+    AsnafOpLog.uiSink = null;
     _liveUiStream?.close();
     _liveLogScrollCtrl.dispose();
     _recoveryProgressScrollCtrl.dispose();
@@ -351,46 +360,21 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   Future<void> _loadState() async {
     final counts = await _draftStore.syncCounts();
-    final offline = await _offlinePrefs.isOfflineEffective(widget.codeCo);
     final state = await _stateStore.readState();
     if (!mounted) return;
     setState(() {
       _syncCounts = counts;
       _draftCount = counts.total;
       _pendingSendCount = counts.pendingSend;
-      _offlineMode = offline;
       _totalCount = state?.totalPlanned ?? 0;
     });
-  }
-
-  Future<void> _toggleOfflineMode(bool value) async {
-    if (!value) {
-      final online = await NetworkReachability.instance.isServerReachable();
-      if (!online) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('سرور در دسترس نیست؛ تا برقراری اتصال، حالت آفلاین فعال می‌ماند.'),
-          ),
-        );
-        return;
-      }
-      await _offlinePrefs.setUserOffline(widget.codeCo, false);
-      await _offlinePrefs.clearAutoOfflineIfOnline(widget.codeCo);
-    } else {
-      await _offlinePrefs.setUserOffline(widget.codeCo, true);
+    if (mounted && !_busy) {
+      AsnafOpLog.line(
+        AsnafOpLog.draft,
+        'وضعیت حافظه | کل=${counts.total} ارسال‌نشده=${counts.pendingSend} '
+        'checkpoint=${state?.mode ?? '—'} p=${state?.currentPage ?? '-'}',
+      );
     }
-    if (!mounted) return;
-    setState(() => _offlineMode = value);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          value
-              ? 'حالت آفلاین: فقط حافظهٔ محلی (بدون API اصناف).'
-              : 'حالت آنلاین: استخراج و بروزرسانی از API فعال است.',
-        ),
-      ),
-    );
   }
 
   String _syncStatusLabel(ImportDraftRecord r) {
@@ -398,17 +382,118 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     return st.labelFa;
   }
 
-  void _appendLog(String line) {
-    final now = DateTime.now();
-    final ts =
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
-    final entry = '[$ts] $line';
-    developer.log(line, name: 'AsnafSite');
+  void _onOpLogEntry(String entry) {
     _logs.insert(0, entry);
-    if (_logs.length > 200) {
-      _logs.removeRange(200, _logs.length);
+    if (_logs.length > 400) {
+      _logs.removeRange(400, _logs.length);
     }
     _pulseLiveUi();
+  }
+
+  void _appendLog(String line, {String op = AsnafOpLog.site}) {
+    AsnafOpLog.line(op, line);
+  }
+
+  String _logsChronologicalText() => _logs.reversed.join('\n');
+
+  Future<void> _copySessionLogs() async {
+    final text = _logsChronologicalText();
+    if (text.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لاگی برای کپی نیست.')),
+      );
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    AsnafOpLog.line(AsnafOpLog.site, 'لاگ‌ها در کلیپ‌بورد کپی شد | n=${_logs.length}');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${_logs.length} خط لاگ کپی شد — اینجا پیست کنید.')),
+    );
+  }
+
+  Future<void> _showSessionLogsSheet() async {
+    AsnafOpLog.line(AsnafOpLog.site, 'نمایشگر لاگ باز شد | n=${_logs.length}');
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SizedBox(
+          height: MediaQuery.of(ctx).size.height * 0.82,
+          child: StreamBuilder<void>(
+            stream: _liveUiStream?.stream,
+            builder: (context, _) {
+              return Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'لاگ تست عملیات اصناف',
+                            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: _logs.isEmpty
+                              ? null
+                              : () {
+                                  _logs.clear();
+                                  AsnafOpLog.line(AsnafOpLog.site, 'لیست لاگ خالی شد');
+                                  _pulseLiveUi();
+                                },
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          label: const Text('پاک کردن'),
+                        ),
+                        FilledButton.tonalIcon(
+                          onPressed: _copySessionLogs,
+                          icon: const Icon(Icons.copy, size: 18),
+                          label: const Text('کپی همه'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Text(
+                      'تگ‌ها: LOGIN TOKEN WEB LATEST FULL TEST5 DRAFT SEND OFFLINE DOWNLOAD API GEO RECORD CTRL',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _logs.isEmpty
+                        ? const Center(child: Text('هنوز لاگی ثبت نشده.'))
+                        : ListView.builder(
+                            padding: const EdgeInsets.all(12),
+                            itemCount: _logs.length,
+                            itemBuilder: (_, i) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: SelectableText(
+                                _logs[i],
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 11.5,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
   }
 
   void _pulseLiveUi() {
@@ -466,13 +551,20 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         _ => 'عملیات اصناف',
       };
 
-  void _beginLiveSession(String sessionMode, {AsnafMeta? planMeta}) {
+  void _beginLiveSession(
+    String sessionMode, {
+    AsnafMeta? planMeta,
+    int? plannedCount,
+  }) {
     AsnafFetchPace.currentMode = AsnafFetchPaceMode.safe;
     if (sessionMode != 'debt_full' && sessionMode != 'debt_latest') {
       AsnafHumanPace.instance.resetSession();
     }
-    _logs.clear();
     _recoveryProgress.clear();
+    AsnafOpLog.line(
+      _opTagForSession(sessionMode),
+      '──────── جلسه جدید ────────',
+    );
     setState(() {
       _busy = true;
       _stopRequested = false;
@@ -484,12 +576,13 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       _sessionNewSavedCount = 0;
       _sessionDebtZeroSkipped = 0;
       _currentRecord = '—';
-      _totalCount = switch (sessionMode) {
-        'test_first_5' || 'test_first_5_debt' => 5,
-        'full' || 'debt_full' || 'server_send' => planMeta?.totalCount ?? 0,
-        'latest' => _kAsnafLatestPagesWindow * 20,
-        _ => planMeta?.totalCount ?? 0,
-      };
+      _totalCount = plannedCount ??
+          switch (sessionMode) {
+            'test_first_5' || 'test_first_5_debt' => 5,
+            'full' || 'debt_full' || 'server_send' => planMeta?.totalCount ?? 0,
+            'latest' => _kAsnafLatestPagesWindow * 20,
+            _ => planMeta?.totalCount ?? 0,
+          };
       _operationStatus = switch (sessionMode) {
         'test_first_5' => 'آمادهٔ تست ۵ پرونده…',
         'test_first_5_debt' => 'آمادهٔ تست بدهی…',
@@ -500,21 +593,22 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         _ => 'آمادهٔ شروع…',
       };
     });
-    _appendLog('▶ شروع: ${_sessionTitle(sessionMode)}');
+    _appendLog('▶ شروع: ${_sessionTitle(sessionMode)}', op: _opTagForSession(sessionMode));
   }
 
   /// دیالوگ زنده بلافاصله باز می‌شود؛ کار در پس‌زمینه ادامه دارد.
   Future<void> _openLiveOperationDialogThenRun({
     required String sessionMode,
     AsnafMeta? planMeta,
+    int? plannedCount,
     required Future<void> Function() run,
   }) async {
-    _beginLiveSession(sessionMode, planMeta: planMeta);
+    _beginLiveSession(sessionMode, planMeta: planMeta, plannedCount: plannedCount);
     if (!mounted) return;
     unawaited(
       run().whenComplete(() {
         if (!mounted) return;
-        _appendLog('── پایان عملیات ──');
+        _appendLog('── پایان عملیات ──', op: _opTagForSession(sessionMode));
         _pulseLiveUi();
       }),
     );
@@ -523,9 +617,17 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   Future<String> _readToken() async => _stateStore.readJwt();
 
+  String _opTagForSession(String sessionMode) => switch (sessionMode) {
+        'full' => AsnafOpLog.full,
+        'latest' => AsnafOpLog.latest,
+        'test_first_5' || 'test_first_5_debt' => AsnafOpLog.test5,
+        'server_send' => AsnafOpLog.send,
+        _ => AsnafOpLog.site,
+      };
+
   Future<void> _clearStoredJwt() async {
     await _stateStore.clearJwt();
-    _appendLog('JWT cleared (manual or policy).');
+    AsnafOpLog.line(AsnafOpLog.token, 'توکن JWT دستی پاک شد');
     if (!mounted) return;
     setState(() => _operationStatus = 'توکن اصناف پاک شد — در WebView لاگین کنید');
     ScaffoldMessenger.of(context).showSnackBar(
@@ -540,10 +642,21 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   Future<bool> _handleAsnafAuthFailure(Object e) async {
     if (e is! AsnafApiAuthException) return false;
-    await _stateStore.clearJwt();
-    _appendLog('API ${e.statusCode} — JWT cleared; recovery stopped.');
+    if (e.fromWebView) {
+      await _stateStore.clearJwt();
+    }
+    AsnafOpLog.line(
+      AsnafOpLog.token,
+      e.fromWebView
+          ? 'قطع دسترسی API ${e.statusCode} از WebView — JWT پاک شد | ${AsnafOpLog.shortUrl(e.url)}'
+          : 'HTTP ${e.statusCode} — JWT نگه داشته شد | ${AsnafOpLog.shortUrl(e.url)}',
+      error: e,
+    );
     if (!mounted) return true;
-    setState(() => _operationStatus = 'دسترسی API قطع شد — لاگین مجدد در WebView');
+    setState(
+      () => _operationStatus =
+          'متوقف — توکن منقضی یا دسترسی قطع شد؛ لاگین کنید و از همان صفحه ادامه دهید',
+    );
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -577,6 +690,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     String? contentDisposition,
   }) async {
     if (!mounted) return;
+    AsnafOpLog.line(
+      AsnafOpLog.download,
+      'درخواست دانلود | url=${AsnafOpLog.clip(url.toString())} mime=$mimeType',
+    );
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('در حال دانلود فایل…'),
@@ -594,11 +711,13 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       );
       if (!mounted) return;
       if (path == null) {
+        AsnafOpLog.line(AsnafOpLog.download, 'دانلود لغو یا مسیر خالی');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('ذخیره فایل لغو شد.')),
         );
         return;
       }
+      AsnafOpLog.line(AsnafOpLog.download, 'موفق | $path');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('فایل ذخیره شد:\n$path'),
@@ -606,6 +725,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         ),
       );
     } catch (e) {
+      AsnafOpLog.line(AsnafOpLog.download, 'خطا در دانلود: $e', error: e);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('خطا در دانلود: $e')),
@@ -633,7 +753,14 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     final isTextExport = ct.contains('csv') ||
         ct.contains('text/plain') ||
         urlStr.toLowerCase().contains('.csv');
-    if (!isTextExport) return;
+    if (!isTextExport) {
+      AsnafOpLog.line(
+        AsnafOpLog.download,
+        'URL شبیه فایل بود ولی CSV نیست | ct=$ct url=${AsnafOpLog.clip(urlStr)}',
+      );
+      return;
+    }
+    AsnafOpLog.line(AsnafOpLog.download, 'پیشنهاد ذخیره CSV | url=${AsnafOpLog.clip(urlStr)}');
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).clearSnackBars();
@@ -660,6 +787,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   /// توکن از WebView (تازه) + حافظه؛ ربات از همان سشن WebView درخواست می‌زند.
   Future<String?> _ensureValidToken({bool tryWebExtract = true}) async {
+    AsnafOpLog.line(
+      AsnafOpLog.token,
+      'بررسی توکن | tryWeb=$tryWebExtract webView=${_webController != null}',
+    );
     if (tryWebExtract && _webController != null) {
       _syncBotWebViewApi();
       await _extractAndSaveToken(silent: true);
@@ -667,36 +798,57 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     var token = await _readToken();
     if (token.isNotEmpty && AsnafJwtPolicy.isExpired(token)) {
       await _stateStore.clearJwt();
-      _appendLog('Stored JWT was expired — cleared.');
+      AsnafOpLog.line(AsnafOpLog.token, 'توکن ذخیره‌شده منقضی بود — پاک شد');
       token = '';
     }
     if (token.isEmpty && tryWebExtract && _webController != null) {
+      AsnafOpLog.line(AsnafOpLog.token, 'توکن خالی — استخراج دوباره از WebView');
       await _extractAndSaveToken(silent: true);
       token = await _readToken();
     }
-    if (token.isEmpty) return null;
-    if (AsnafJwtPolicy.isExpired(token)) {
-      await _stateStore.clearJwt();
+    if (token.isEmpty) {
+      AsnafOpLog.line(AsnafOpLog.token, 'نتیجه: توکن معتبر نیست');
       return null;
     }
+    if (AsnafJwtPolicy.isExpired(token)) {
+      await _stateStore.clearJwt();
+      AsnafOpLog.line(AsnafOpLog.token, 'توکن بعد از استخراج هم منقضی بود');
+      return null;
+    }
+    AsnafOpLog.line(AsnafOpLog.token, 'توکن معتبر | ${AsnafOpLog.jwtSafe(token)}');
     return token;
   }
 
   Future<void> _extractAndSaveToken({bool silent = false, String? pageUrl}) async {
     final c = _webController;
-    if (c == null) return;
-    if (pageUrl != null && !AsnafJwtPolicy.isAuthenticatedPanelUrl(pageUrl)) {
+    if (c == null) {
+      AsnafOpLog.line(AsnafOpLog.login, 'استخراج توکن ممکن نیست — WebView آماده نیست');
       return;
     }
-    setState(() => _busy = true);
+    if (pageUrl != null && !AsnafJwtPolicy.isAuthenticatedPanelUrl(pageUrl)) {
+      AsnafOpLog.line(
+        AsnafOpLog.login,
+        'صفحه پنل احرازشده نیست — استخراج نشد | url=${AsnafOpLog.clip(pageUrl)} '
+        'public=${AsnafJwtPolicy.isPublicOrLoginUrl(pageUrl)}',
+      );
+      return;
+    }
+    if (!silent && mounted) setState(() => _busy = true);
     try {
       final raw = await c.evaluateJavascript(
         source: AsnafJwtExtract.extractJavaScript,
         contentWorld: ContentWorld.PAGE,
       );
-      final token = AsnafJwtExtract.parseTokenFromJsResult(raw);
+      final diag = AsnafJwtExtract.diagnoseJsResult(raw);
+      AsnafOpLog.line(
+        AsnafOpLog.login,
+        'نتیجه JS | found=${diag.foundCount} note=${diag.note} expired=${diag.expired} '
+        '| ${AsnafOpLog.jwtSafe(diag.token)} silent=$silent',
+      );
+      final token = (diag.expired || diag.token == null || diag.token!.isEmpty)
+          ? null
+          : diag.token;
       if (token == null || token.isEmpty) {
-        _appendLog('JWT not found; login required.');
         setState(() => _operationStatus = 'منتظر لاگین به وب سایت');
         if (!silent && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -712,209 +864,193 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         return;
       }
       await _stateStore.saveJwt(token);
-      _appendLog('JWT saved from WebView (authenticated panel).');
+      AsnafOpLog.line(AsnafOpLog.login, 'JWT ذخیره شد | ${AsnafOpLog.jwtSafe(token)}');
       setState(() => _operationStatus = 'لاگین انجام شد');
     } catch (e) {
-      _appendLog('Token extract error: $e');
+      AsnafOpLog.line(AsnafOpLog.login, 'خطا در استخراج توکن: $e', error: e);
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('خطا در بررسی لاگین: $e')),
         );
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (!silent && mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _startFlow({required bool full}) async {
-    if (!full) {
-      await _startLatestFlow();
-      return;
-    }
-
+  Future<void> _onUpdatePressed() async {
+    AsnafOpLog.line(AsnafOpLog.site, 'کلیک بروزرسانی | busy=$_busy');
     final token = await _ensureValidToken();
     if (token == null) {
+      AsnafOpLog.line(AsnafOpLog.token, 'لغو بروزرسانی — توکن معتبر نیست');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'توکن معتبر نیست. در WebView تا صفحهٔ پنل (بعد از login) بروید، سپس دوباره تلاش کنید.',
+            'ابتدا در همین صفحه وارد پنل اصناف شوید (بعد از صفحهٔ login)، سپس دوباره «بروزرسانی» را بزنید.',
           ),
         ),
       );
       return;
     }
+    if (!mounted) return;
 
-  if (!mounted) return;
-    final choice = await _showManualFullUpdateDialog();
-    if (!mounted || choice == null) return;
-
-    if (choice.isTestFirst5) {
-      await _openLiveOperationDialogThenRun(
-        sessionMode: 'test_first_5',
-        run: () => _runTestFirstFiveRecords(token: token),
-      );
-      return;
-    }
-
-    final planMeta = choice.metaOrNull;
-    if (planMeta == null) return;
-
-    final warn = await showDialog<bool>(
+    final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('هشدار قبل از شروع'),
-        content: Text(
-          'بروزرسانی کامل ${planMeta.totalPages} صفحه (تخمین ${planMeta.totalCount} پرونده) '
-          'با فاصلهٔ تصادفی ۱۰–۲۰ ثانیه بین پرونده‌ها و استراحت ۳۰–۴۵ دقیقه هر ۳۰۰ پرونده انجام می‌شود.\n\n'
-          'تا پایان، پنجره برنامه و اینترنت را قطع نکنید.',
+        title: const Text('بروزرسانی از سایت اصناف'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.science_outlined),
+              title: const Text('تست ۵ پرونده'),
+              subtitle: const Text('برای اطمینان از لاگین و دریافت داده'),
+              onTap: () => Navigator.pop(ctx, 'test5'),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.update_rounded),
+              title: const Text('جدیدترین موارد'),
+              subtitle: const Text('حدود ۱۰۰ پروندهٔ آخر'),
+              onTap: () => Navigator.pop(ctx, 'latest'),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.sync_alt_rounded),
+              title: const Text('بروزرسانی کامل'),
+              subtitle: const Text('انتخاب صفحه، تعداد، یا ادامه از آخرین توقف'),
+              onTap: () => Navigator.pop(ctx, 'full'),
+            ),
+          ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('بازگشت')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('تایید و شروع')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')),
         ],
       ),
     );
-    if (warn != true) return;
+    if (!mounted || choice == null) {
+      AsnafOpLog.line(AsnafOpLog.site, 'انصراف از انتخاب نوع بروزرسانی');
+      return;
+    }
 
+    switch (choice) {
+      case 'test5':
+        AsnafOpLog.line(AsnafOpLog.test5, 'انتخاب تست ۵ پرونده');
+        await _openLiveOperationDialogThenRun(
+          sessionMode: 'test_first_5',
+          run: () => _runTestFirstFiveRecords(token: token),
+        );
+        break;
+      case 'latest':
+        AsnafOpLog.line(AsnafOpLog.latest, 'انتخاب جدیدترین‌ها');
+        await _openLiveOperationDialogThenRun(
+          sessionMode: 'latest',
+          run: () => _runRecovery(
+            recoveryMode: 'latest',
+            token: token,
+            discoverLatestPages: true,
+          ),
+        );
+        break;
+      case 'full':
+        await _startFullAfterChoice(token);
+        break;
+      default:
+        break;
+    }
+  }
+
+  Future<void> _startFullAfterChoice(String token) async {
+    AsnafOpLog.line(AsnafOpLog.full, 'دریافت تعداد صفحات از API…');
+    late AsnafMeta planMeta;
+    try {
+      planMeta = await _bot.fetchMeta(token);
+    } catch (e) {
+      AsnafOpLog.line(AsnafOpLog.full, 'خطا در دریافت متا: $e', error: e);
+      if (await _handleAsnafAuthFailure(e)) return;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('نتوانستیم لیست پرونده‌ها را بگیریم: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    AsnafOpLog.line(
+      AsnafOpLog.full,
+      'برنامه | count=${planMeta.totalCount} pages=${planMeta.totalPages}',
+    );
+    final checkpoint = await _stateStore.readState();
+    if (!mounted) return;
+    final plan = await showDialog<_FullUpdatePlan>(
+      context: context,
+      builder: (ctx) => _FullUpdatePlanDialog(
+        totalPages: planMeta.totalPages,
+        totalCount: planMeta.totalCount,
+        checkpoint: _isIncompleteFullCheckpoint(checkpoint) ? checkpoint : null,
+      ),
+    );
+    if (plan == null) {
+      AsnafOpLog.line(AsnafOpLog.full, 'هشدار شروع تأیید نشد');
+      return;
+    }
+    final planned = _plannedCountForRange(
+      startPage: plan.startPage,
+      endPage: plan.endPage,
+      apiTotalCount: planMeta.totalCount,
+      apiTotalPages: planMeta.totalPages,
+      maxRecords: plan.maxRecords,
+    );
+    AsnafOpLog.line(
+      AsnafOpLog.full,
+      'شروع تأیید شد | resume=${plan.resumeCheckpoint} '
+      'pages=${plan.startPage}..${plan.endPage} max=${plan.maxRecords ?? '—'} planned=$planned',
+    );
     await _openLiveOperationDialogThenRun(
       sessionMode: 'full',
       planMeta: planMeta,
+      plannedCount: planned,
       run: () => _runRecovery(
         recoveryMode: 'full',
         token: token,
         planMeta: planMeta,
+        overrideStartPage: plan.resumeCheckpoint ? null : plan.startPage,
+        overrideEndPage: plan.resumeCheckpoint ? null : plan.endPage,
+        maxRecords: plan.maxRecords,
+        resumeFromCheckpoint: plan.resumeCheckpoint,
       ),
     );
   }
 
-  Future<void> _startLatestFlow() async {
-    final token = await _ensureValidToken();
-    if (token == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('توکن معتبر نیست. ابتدا در WebView لاگین کنید.')),
-      );
-      return;
+  int _plannedCountForRange({
+    required int startPage,
+    required int endPage,
+    required int apiTotalCount,
+    required int apiTotalPages,
+    int? maxRecords,
+  }) {
+    final pages = (endPage - startPage + 1).clamp(1, 100000);
+    late final int approx;
+    if (startPage == 1 && endPage == apiTotalPages && apiTotalCount > 0) {
+      approx = apiTotalCount;
+    } else {
+      final perPage = apiTotalPages > 0
+          ? (apiTotalCount / apiTotalPages).round().clamp(1, 50)
+          : 20;
+      approx = pages * perPage;
     }
-
-    if (!mounted) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('بروزرسانی جدیدترین موارد'),
-        content: const Text(
-          'فقط $_kAsnafLatestPagesWindow صفحهٔ آخر لیست (حدود ۱۰۰ پرونده) پردازش می‌شود.\n\n'
-          'تعداد کل پرونده‌ها از سرور دریافت نمی‌شود؛ پس از شروع، صفحهٔ پایانی از همان پاسخ لیست مشخص می‌شود.\n\n'
-          'تصاویر پروانه، پروفایل و همهٔ مدارک دانلود می‌شوند. '
-          'بین هر پرونده ۱۰–۲۰ ثانیه (تصادفی) و هر ۳۰۰ پرونده استراحت ۳۰–۴۵ دقیقه.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('انصراف')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('شروع')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    await _openLiveOperationDialogThenRun(
-      sessionMode: 'latest',
-      run: () => _runRecovery(
-        recoveryMode: 'latest',
-        token: token,
-        discoverLatestPages: true,
-      ),
-    );
+    if (maxRecords != null && maxRecords > 0 && maxRecords < approx) {
+      return maxRecords;
+    }
+    return approx;
   }
 
-  Future<_ManualFullUpdateChoice?> _showManualFullUpdateDialog() async {
-    final countCtrl = TextEditingController();
-    final pagesCtrl = TextEditingController();
-    try {
-      return await showDialog<_ManualFullUpdateChoice>(
-        context: context,
-        builder: (ctx) {
-          return StatefulBuilder(
-            builder: (ctx, setLocal) {
-              final count = int.tryParse(countCtrl.text.trim()) ?? 0;
-              final pages = int.tryParse(pagesCtrl.text.trim()) ?? 0;
-              final est = AsnafHumanPace.estimateHoursForCount(count);
-              return AlertDialog(
-                title: const Text('بروزرسانی کامل اطلاعات'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'تعداد پرونده و صفحات را دستی وارد کنید (فقط برای تخمین زمان در همین دیالوگ؛ '
-                        'هنگام فشردن دکمه درخواست شمارشی به سرور ارسال نمی‌شود).',
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: countCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'تعداد تقریبی پرونده‌ها',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        onChanged: (_) => setLocal(() {}),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: pagesCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'تعداد صفحات لیست API',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        onChanged: (_) => setLocal(() {}),
-                      ),
-                      if (count > 0) ...[
-                        const SizedBox(height: 10),
-                        Text('تخمین زمان (رفتار ایمن): حدود ${est.toStringAsFixed(1)} ساعت'),
-                      ],
-                      const SizedBox(height: 10),
-                      Text(
-                        'پس از شروع: فاصلهٔ ۱۰–۲۰ ثانیه بین پرونده‌ها، استراحت ۳۰–۴۵ دقیقه هر ۳۰۰ پرونده. '
-                        'عکس پروانه، تصویر شخص و همهٔ مدارک استخراج می‌شوند.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                actions: [
-                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')),
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, const _ManualFullUpdateChoice.testFirst5()),
-                    child: const Text('تست ۵ پرونده'),
-                  ),
-                  FilledButton(
-                    onPressed: pages > 0
-                        ? () => Navigator.pop(
-                              ctx,
-                              _ManualFullUpdateChoice.start(
-                                AsnafMeta(totalCount: count > 0 ? count : pages * 20, totalPages: pages),
-                              ),
-                            )
-                        : null,
-                    child: const Text('شروع عملیات'),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-    } finally {
-      countCtrl.dispose();
-      pagesCtrl.dispose();
-    }
+  bool _isIncompleteFullCheckpoint(AsnafRecoveryState? s) {
+    if (s == null || s.mode != 'full') return false;
+    if (s.currentPage < 1) return false;
+    if (s.currentPage < s.endPage) return true;
+    return s.currentPage == s.endPage && s.currentIndexInPage > 0;
   }
 
   /// همان مسیر [buildDraftRecord] عملیات کامل (جزئیات، اسناد، ژئوکد) برای پنج پروندهٔ اول لیست API.
@@ -925,27 +1061,17 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     var fail = 0;
     final entries = <AsnafFirstFiveTestEntry>[];
     final neshanOk = _bot.isNeshanGeocodingConfigured;
-    if (_offlineMode) {
-      _appendLog('خطا: حالت آفلاین — تست آنلاین غیرفعال است');
-      if (mounted) {
-        setState(() {
-          _busy = false;
-          _operationStatus = 'تست در حالت آفلاین ممکن نیست';
-        });
-      }
-      return;
-    }
     try {
       const target = 5;
       var collected = 0;
       var page = 1;
 
       while (collected < target) {
-        _appendLog('دریافت لیست صفحه $page…');
+        _appendLog('دریافت لیست صفحه $page…', op: AsnafOpLog.test5);
         setState(() => _operationStatus = 'دریافت لیست صفحه $page');
         _pulseLiveUi();
         final rows = await _bot.fetchParvandehPage(token: token, page: page);
-        _appendLog('صفحه $page: ${rows.length} ردیف');
+        _appendLog('صفحه $page: ${rows.length} ردیف', op: AsnafOpLog.test5);
         if (rows.isEmpty) break;
         for (var i = 0; i < rows.length && collected < target; i++) {
           final row = rows[i] is Map ? rows[i] as Map : const {};
@@ -958,8 +1084,8 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             _operationStatus = 'پردازش پرونده $id ($collected/$target)';
           });
           _pulseLiveUi();
-          _appendLog('── پرونده $collected/$target | id=$id ──');
-          _appendLog('دریافت جزئیات و مدارک…');
+          _appendLog('── پرونده $collected/$target | id=$id ──', op: AsnafOpLog.test5);
+          _appendLog('دریافت جزئیات و مدارک…', op: AsnafOpLog.test5);
           final sw = Stopwatch()..start();
           try {
             final record = await _bot.buildDraftRecord(
@@ -969,13 +1095,13 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
               includeDocs: true,
               geocodeIfMissing: false,
             );
-            _appendLog('ذخیره در حافظه و دانلود تصاویر…');
-            await _draftStore.upsert(record);
+            _appendLog('ذخیره در حافظه و دانلود تصاویر…', op: AsnafOpLog.test5);
+            final up = await _draftStore.upsert(record);
             ok++;
             _processedCount = ok + fail;
             _pushRecoveryProgress(id, 'ok', 'ذخیره شد — ${record.payload['name_store'] ?? ''}');
             entries.add(AsnafFirstFiveTestEntry.fromSuccess(record, neshanKeyConfigured: neshanOk));
-            _appendLog('✓ موفق id=$id');
+            _appendLog('✓ موفق id=$id upsert=$up', op: AsnafOpLog.test5);
             _pulseLiveUi();
           } catch (e) {
             fail++;
@@ -983,7 +1109,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             _failedCount = fail;
             _pushRecoveryProgress(id, 'error', e.toString());
             entries.add(AsnafFirstFiveTestEntry.failure(id, e));
-            _appendLog('✗ خطا id=$id | $e');
+            _appendLog('✗ خطا id=$id | $e', op: AsnafOpLog.test5);
             if (_isHardNetworkError(e)) {
               setState(() => _operationStatus = 'timeout شبکه — استراحت قبل از ادامه');
               _appendLog('⏸ استراحت ۱۰–۱۵ دقیقه پس از timeout…');
@@ -1002,7 +1128,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       }
 
       if (collected < target) {
-        _appendLog('Test first 5: only $collected dossiers in API range (expected $target).');
+        _appendLog(
+          'فقط $collected پرونده در محدوده API بود (هدف $target).',
+          op: AsnafOpLog.test5,
+        );
       }
 
       await _loadState();
@@ -1037,7 +1166,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         ),
       );
     } catch (e) {
-      _appendLog('Test first 5 fatal: $e');
+      _appendLog('خطای کلی تست ۵ پرونده: $e', op: AsnafOpLog.test5);
       if (await _handleAsnafAuthFailure(e)) return;
       if (mounted) {
         setState(() => _operationStatus = 'خطا در تست ۵ پروندهٔ اول');
@@ -1107,14 +1236,14 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                   _paused = false;
                   _stopRequested = true;
                   setState(() => _operationStatus = 'در حال توقف کامل…');
-                  _appendLog('⏹ درخواست توقف کامل');
+                  _appendLog('⏹ درخواست توقف کامل', op: AsnafOpLog.pause);
                 }
               : null,
           onPause: (_busy && !_stopRequested && !_paused)
               ? () {
                   _paused = true;
                   setState(() => _operationStatus = 'متوقف موقت');
-                  _appendLog('⏸ توقف موقت');
+                  _appendLog('⏸ توقف موقت', op: AsnafOpLog.pause);
                 }
               : null,
           onResume: ((_busy && _paused) || (!_busy && (_operationStatus.contains('متوقف') || _operationStatus.contains('خطا در عملیات'))))
@@ -1122,7 +1251,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                   if (_busy && _paused) {
                     _paused = false;
                     setState(() => _operationStatus = 'ادامه پس از توقف موقت…');
-                    _appendLog('▶ ادامه از توقف موقت');
+                    _appendLog('▶ ادامه از توقف موقت', op: AsnafOpLog.pause);
                     return;
                   }
                   final token = await _readToken();
@@ -1130,7 +1259,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                   final st = await _stateStore.readState();
                   if (st == null || !mounted) return;
                   setState(() => _operationStatus = 'شروع مجدد…');
-                  _appendLog('▶ شروع مجدد از checkpoint');
+                  _appendLog('▶ شروع مجدد از checkpoint', op: AsnafOpLog.pause);
                   unawaited(_runRecovery(
                     recoveryMode: sessionMode,
                     token: token,
@@ -1138,6 +1267,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                       totalCount: st.totalPlanned,
                       totalPages: st.endPage,
                     ),
+                    resumeFromCheckpoint: true,
                   ));
                 }
               : null,
@@ -1167,6 +1297,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     required String token,
     AsnafMeta? planMeta,
     bool discoverLatestPages = false,
+    int? overrideStartPage,
+    int? overrideEndPage,
+    int? maxRecords,
+    bool resumeFromCheckpoint = false,
   }) async {
     var lastPersistedPage = 1;
     var lastPersistedIndexInPage = 0;
@@ -1179,24 +1313,17 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       _stopRequested = false;
       _recoveryEndedAllowingSave = false;
     });
-    _appendLog('Recovery started | mode=$recoveryMode');
+    _appendLog('Recovery started | mode=$recoveryMode', op: _opTagForSession(recoveryMode));
     var authBlocked = false;
-
-    if (_offlineMode) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('در حالت آفلاین استخراج از API اصناف غیرفعال است. سوئیچ را روی آنلاین بگذارید.'),
-        ),
-      );
-      return;
-    }
 
     try {
       final currentState = await _stateStore.readState();
-      final resume = currentState != null &&
+      final resumeRunning = currentState != null &&
           currentState.running &&
           currentState.mode == recoveryMode;
+      final resume = resumeFromCheckpoint
+          ? (currentState != null && currentState.mode == recoveryMode)
+          : resumeRunning;
 
       late int startPage;
       late int endPage;
@@ -1206,6 +1333,16 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         startPage = currentState.startPage;
         endPage = currentState.endPage;
         totalCount = currentState.totalPlanned;
+      } else if (overrideStartPage != null && overrideEndPage != null) {
+        startPage = overrideStartPage.clamp(1, overrideEndPage);
+        endPage = overrideEndPage;
+        totalCount = _plannedCountForRange(
+          startPage: startPage,
+          endPage: endPage,
+          apiTotalCount: planMeta?.totalCount ?? 0,
+          apiTotalPages: planMeta?.totalPages ?? endPage,
+          maxRecords: maxRecords,
+        );
       } else if (discoverLatestPages) {
         final first = await _bot.fetchParvandehPageWithMeta(token: token, page: 1);
         final totalPages = first.meta.totalPages;
@@ -1214,7 +1351,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             ? totalPages - _kAsnafLatestPagesWindow + 1
             : 1;
         totalCount = (_kAsnafLatestPagesWindow * 20).clamp(1, first.meta.totalCount);
-        _appendLog('Latest window | pages $startPage..$endPage (discovered totalPages=$totalPages)');
+        _appendLog(
+          'پنجره جدیدترین‌ها | صفحات $startPage..$endPage (totalPages=$totalPages count=${first.meta.totalCount})',
+          op: AsnafOpLog.latest,
+        );
       } else if (planMeta != null) {
         endPage = planMeta.totalPages;
         startPage = fullWindow
@@ -1232,6 +1372,13 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           currentState.endPage == endPage &&
           (currentState.currentPage > startPage ||
               (currentState.currentPage == startPage && currentState.currentIndexInPage > 0));
+      final continueSamePage = !resume &&
+          !resumeCheckpoint &&
+          currentState != null &&
+          currentState.mode == recoveryMode &&
+          overrideStartPage != null &&
+          currentState.currentPage == startPage &&
+          currentState.currentIndexInPage > 0;
       late int currentPage;
       late int currentIndex;
       late int processed;
@@ -1241,7 +1388,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         currentIndex = currentState.currentIndexInPage;
         processed = currentState.processedCount;
         failed = currentState.failedCount;
-      } else if (resumeCheckpoint) {
+      } else if (resumeCheckpoint || continueSamePage) {
         currentPage = currentState.currentPage;
         currentIndex = currentState.currentIndexInPage;
         processed = currentState.processedCount;
@@ -1256,7 +1403,14 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       lastPersistedPage = currentPage;
       lastPersistedIndexInPage = currentIndex;
 
-      if (!resume && !resumeCheckpoint) {
+      _appendLog(
+        'پنجره کار | resume=$resume checkpoint=$resumeCheckpoint '
+        'pages=$startPage..$endPage from p$currentPage idx=$currentIndex '
+        'processed=$processed failed=$failed planned=$totalCount max=${maxRecords ?? '—'}',
+        op: _opTagForSession(recoveryMode),
+      );
+
+      if (!resume && !resumeCheckpoint && !continueSamePage) {
         AsnafHumanPace.instance.resetSession();
       }
 
@@ -1272,8 +1426,11 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         _totalCount = totalCount;
       });
 
+      var sessionAdded = 0;
+      var hitRecordCap = false;
+
       for (var page = currentPage; page <= endPage; page++) {
-        if (authBlocked) break;
+        if (authBlocked || hitRecordCap) break;
         await _waitWhilePaused();
         if (_stopRequested) break;
         List<dynamic> rows;
@@ -1286,8 +1443,11 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           }
           rethrow;
         }
-        _appendLog('Page $page loaded with ${rows.length} rows');
         final startIndex = (page == currentPage) ? currentIndex : 0;
+        _appendLog(
+          'صفحه $page بارگذاری شد | ${rows.length} ردیف | از ایندکس $startIndex',
+          op: _opTagForSession(recoveryMode),
+        );
         for (var i = startIndex; i < rows.length; i++) {
           await _waitWhilePaused();
           if (_stopRequested) break;
@@ -1318,7 +1478,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                   final m = record.payload['money'] ?? '';
                   _pushRecoveryProgress(id, 'ok', 'بدهی در حافظه ($m) — ${up.name}');
                 }
-                _appendLog('Debt record OK id=$id | upsert=$up');
+                _appendLog('بدهی OK id=$id | upsert=$up', op: _opTagForSession(recoveryMode));
               }
               await Future<void>.delayed(AsnafFetchPace.current.pauseAfterDebtParvande);
             } else {
@@ -1345,7 +1505,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                       : 'در حافظهٔ محلی ذخیره شد',
                 );
               }
-              _appendLog('Record OK id=$id | upsert=$up');
+              _appendLog('پرونده OK id=$id | upsert=$up', op: _opTagForSession(recoveryMode));
               await AsnafHumanPace.instance.waitAfterParvande(sw);
               await AsnafHumanPace.instance.maybeLongRest(
                 processedCount: processed,
@@ -1364,7 +1524,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             failed++;
             _failedCount = failed;
             _pushRecoveryProgress(id, 'error', e.toString());
-            _appendLog('Record ERROR id=$id | $e');
+            _appendLog('خطای پرونده id=$id | $e', op: _opTagForSession(recoveryMode));
           }
 
           if (authBlocked) break;
@@ -1391,16 +1551,38 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             _processedCount = processed;
             _failedCount = failed;
           });
+          sessionAdded++;
+          if (maxRecords != null && sessionAdded >= maxRecords) {
+            hitRecordCap = true;
+            _appendLog(
+              'سقف تعداد این اجرا رسید ($maxRecords) — پیشرفت در صفحه $page ایندکس ${i + 1} ذخیره شد',
+              op: _opTagForSession(recoveryMode),
+            );
+            break;
+          }
         }
         currentIndex = 0;
-        if (!authBlocked) {
-          await Future<void>.delayed(AsnafFetchPace.current.pauseAfterListPage);
-        }
+        if (hitRecordCap || authBlocked || _stopRequested) break;
+        await Future<void>.delayed(AsnafFetchPace.current.pauseAfterListPage);
       }
 
-      if (_stopRequested) {
-        _appendLog('Recovery stopped by user.');
-        setState(() => _operationStatus = 'عملیات متوقف شد');
+      final incomplete = _stopRequested || authBlocked || hitRecordCap;
+      if (incomplete) {
+        final reason = authBlocked
+            ? 'قطع احراز هویت — پیشرفت ذخیره شد (صفحه $lastPersistedPage)'
+            : (hitRecordCap
+                ? 'سقف تعداد این اجرا — می‌توانید بعداً از همین صفحه ادامه دهید'
+                : 'توقف توسط کاربر');
+        _appendLog(reason, op: _opTagForSession(recoveryMode));
+        if (mounted) {
+          setState(() {
+            _operationStatus = authBlocked
+                ? 'متوقف — توکن منقضی شد؛ لاگین کنید و از صفحه $lastPersistedPage ادامه دهید'
+                : (hitRecordCap
+                    ? 'متوقف — سقف تعداد رسید؛ پیشرفت در صفحه $lastPersistedPage ذخیره شد'
+                    : 'عملیات متوقف شد');
+          });
+        }
         await _stateStore.saveState(
           AsnafRecoveryState(
             mode: recoveryMode,
@@ -1415,7 +1597,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           ),
         );
       } else {
-        _appendLog('Recovery completed successfully.');
+        _appendLog(
+          'اتمام موفق | processed=$processed failed=$failed new=$_sessionNewSavedCount skip=$_sessionSkippedCount',
+          op: _opTagForSession(recoveryMode),
+        );
         setState(() {
           _operationStatus = switch (recoveryMode) {
             'full' => 'عملیات بروز رسانی کامل اطلاعات به اتمام رسید',
@@ -1440,7 +1625,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         );
       }
     } catch (e) {
-      _appendLog('Recovery fatal error: $e');
+      _appendLog('خطای کلی بازیابی: $e', op: _opTagForSession(recoveryMode));
       setState(() => _operationStatus = 'خطا در عملیات');
       rethrow;
     } finally {
@@ -1457,7 +1642,14 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   }
 
   Future<void> _sendToServer({bool confirmDialog = true}) async {
-    if (_busy) return;
+    AsnafOpLog.line(
+      AsnafOpLog.send,
+      'کلیک ارسال | busy=$_busy pending=$_pendingSendCount confirm=$confirmDialog',
+    );
+    if (_busy) {
+      AsnafOpLog.line(AsnafOpLog.send, 'لغو — عملیات دیگری در حال اجراست');
+      return;
+    }
     // اگر قبلاً توقف زده شده بود، ارسال نباید با فلگ قدیمی متوقف شود.
     _stopRequested = false;
 
@@ -1466,6 +1658,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     final records = await _draftStore.readPendingForSync();
     if (!mounted) return;
     if (records.isEmpty) {
+      AsnafOpLog.line(AsnafOpLog.send, 'لغو — پروندهٔ ارسال‌نشده نیست');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1496,7 +1689,11 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           ],
         ),
       );
-      if (ok != true) return;
+      if (ok != true) {
+        AsnafOpLog.line(AsnafOpLog.send, 'کاربر انصراف داد');
+        return;
+      }
+      AsnafOpLog.line(AsnafOpLog.send, 'تأیید شد | n=${records.length}');
     }
     if (!mounted) return;
 
@@ -1523,7 +1720,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             _processedCount = p.done;
             _totalCount = p.total;
           });
-          _appendLog(p.message);
+          _appendLog(p.message, op: AsnafOpLog.send);
         },
       );
 
@@ -1531,7 +1728,8 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
       final sent = result.sentRecords;
       _appendLog(
         'نهایی‌سازی | پرونده=${fin.inserted} رد=${fin.skipped} | '
-        'سند=${fin.docsInserted} | خطا=${fin.failed}',
+        'سند=${fin.docsInserted} | خطا=${fin.failed} sent=$sent stopped=${result.stoppedEarly}',
+        op: AsnafOpLog.send,
       );
       await _loadState();
       if (!mounted) return;
@@ -1560,7 +1758,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         );
       }
     } catch (e) {
-      _appendLog('خطا در ارسال: $e');
+      _appendLog('خطا در ارسال: $e', op: AsnafOpLog.send);
       if (mounted) {
         setState(() => _operationStatus = 'خطا در ارسال به سرور');
         _pulseLiveUi();
@@ -1581,6 +1779,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
     if (!mounted) return;
     var filter = SyncStatusFilter.all;
     var records = await _draftStore.read(filter: filter);
+    AsnafOpLog.line(AsnafOpLog.draft, 'باز شدن حافظه محلی | n=${records.length}');
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
@@ -1638,7 +1837,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                                 if (!mounted) return;
                                 await _loadState();
                                 await reload();
-                                _appendLog('Local cache cleared manually.');
+                                _appendLog('حافظه محلی دستی خالی شد', op: AsnafOpLog.draft);
                               },
                         icon: const Icon(Icons.delete_sweep_outlined),
                         label: const Text('خالی کردن حافظه'),
@@ -1659,6 +1858,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                             selected: filter == f,
                             onSelected: (_) async {
                               filter = f;
+                              AsnafOpLog.line(AsnafOpLog.draft, 'فیلتر=${_filterLabel(f)}');
                               await reload();
                             },
                           ),
@@ -1692,7 +1892,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                                   if (!mounted) return;
                                   await _loadState();
                                   setLocal(() {});
-                                  _appendLog('Draft edited id=${edited.clientTempId}');
+                                  _appendLog('ویرایش رکورد id=${edited.clientTempId}', op: AsnafOpLog.draft);
                                 },
                                 icon: const Icon(Icons.edit_outlined),
                               ),
@@ -1700,6 +1900,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                                 tooltip: 'حذف',
                                 onPressed: () async {
                                   await _draftStore.deleteRecord(r.clientTempId);
+                                  AsnafOpLog.line(AsnafOpLog.draft, 'حذف رکورد id=${r.clientTempId}');
                                   await reload();
                                   if (!mounted) return;
                                   await _loadState();
@@ -1798,6 +1999,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                           city: payload['city_store'] ?? '',
                         );
                         if (geo == null) {
+                          AsnafOpLog.line(AsnafOpLog.geo, 'ژئوکد ناموفق برای ${record.clientTempId}');
                           if (!context.mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -1811,7 +2013,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                         latCtrl.text = geo.$1;
                         longCtrl.text = geo.$2;
                         setLocal(() {});
-                        _appendLog('Geocode updated for ${record.clientTempId}');
+                        AsnafOpLog.line(AsnafOpLog.geo, 'ژئوکد موفق برای ${record.clientTempId}');
                       },
                       icon: const Icon(Icons.place_outlined),
                       label: const Text('استخراج اطلاعات نقشه از آدرس'),
@@ -1980,16 +2182,10 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       _asnafToolbarAction(
-                        label: 'جدیدترین‌ها',
-                        icon: Icons.update_rounded,
-                        tooltip: '۵ صفحهٔ آخر (~۱۰۰ پرونده)',
-                        onPressed: _busy ? null : () => _startFlow(full: false),
-                      ),
-                      _asnafToolbarAction(
-                        label: 'بروزرسانی کامل',
-                        icon: Icons.sync_alt_rounded,
-                        tooltip: 'جزئیات، اسناد و مختصات برای همهٔ صفحات',
-                        onPressed: _busy ? null : () => _startFlow(full: true),
+                        label: 'بروزرسانی',
+                        icon: Icons.sync_rounded,
+                        tooltip: 'تست ۵ پرونده، جدیدترین‌ها یا بروزرسانی کامل',
+                        onPressed: _busy ? null : _onUpdatePressed,
                       ),
                       _asnafToolbarSaveButton(),
                     ],
@@ -2028,38 +2224,20 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                         ),
                       ),
                     ),
-                    FutureBuilder<bool>(
-                      future: NetworkReachability.instance.isServerReachableCached(),
-                      builder: (context, snap) {
-                        final serverUp = snap.data ?? true;
-                        final lockedOffline = _offlineMode && !serverUp;
-                        return Tooltip(
-                          message: lockedOffline
-                              ? 'قطع اینترنت/سرور — آفلاین اجباری'
-                              : (_offlineMode
-                                  ? 'حالت آفلاین — فقط حافظه محلی'
-                                  : 'حالت آنلاین — استخراج از API'),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                'آفلاین',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.white.withValues(alpha: 0.9),
-                                ),
-                              ),
-                              Switch(
-                                value: _offlineMode,
-                                onChanged: (_busy || lockedOffline) ? null : _toggleOfflineMode,
-                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
                     const SizedBox(width: 4),
+                    IconButton(
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: EdgeInsets.zero,
+                      tooltip: 'لاگ تست عملیات (کپی و ارسال برای رفع ایراد)',
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white.withValues(alpha: 0.18),
+                        foregroundColor: Colors.white,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: _showSessionLogsSheet,
+                      icon: const Icon(Icons.terminal, size: 20),
+                    ),
                     IconButton(
                       constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                       padding: EdgeInsets.zero,
@@ -2151,10 +2329,67 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                   mediaPlaybackRequiresUserGesture: false,
                   useOnDownloadStart: true,
                   useShouldOverrideUrlLoading: true,
+                  useOnLoadResource: true,
                 ),
+                initialUserScripts: UnmodifiableListView<UserScript>([
+                  UserScript(
+                    source: AsnafWebViewApi.networkHookSource,
+                    injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    forMainFrameOnly: false,
+                  ),
+                ]),
                 onWebViewCreated: (controller) {
                   _webController = controller;
                   _syncBotWebViewApi();
+                  AsnafOpLog.line(AsnafOpLog.web, 'WebView ساخته شد');
+                },
+                onLoadStart: (controller, url) {
+                  AsnafOpLog.line(
+                    AsnafOpLog.web,
+                    'load_start | ${AsnafOpLog.clip(url?.toString() ?? '')}',
+                  );
+                },
+                onLoadResource: (controller, resource) {
+                  final u = resource.url?.toString() ?? '';
+                  if (u.contains('parvaneh') ||
+                      u.contains('apinovin') ||
+                      u.contains('/docs')) {
+                    AsnafOpLog.line(
+                      AsnafOpLog.api,
+                      'resource ${AsnafOpLog.shortUrl(u)}',
+                    );
+                  }
+                },
+                onConsoleMessage: (controller, consoleMessage) {
+                  final m = consoleMessage.message;
+                  if (m.startsWith('[AsnafNet]')) {
+                    AsnafOpLog.line(AsnafOpLog.api, m);
+                  }
+                },
+                onReceivedError: (controller, request, error) {
+                  AsnafOpLog.line(
+                    AsnafOpLog.web,
+                    'خطای بارگذاری | type=${error.type} desc=${error.description} '
+                    'url=${AsnafOpLog.clip(request.url.toString())}',
+                  );
+                },
+                onReceivedServerTrustAuthRequest: (controller, challenge) async {
+                  final host = challenge.protectionSpace.host;
+                  if (host.contains('apinovin.iranianasnaf.ir')) {
+                    AsnafOpLog.line(AsnafOpLog.web, 'SSL trust قبول شد | host=$host');
+                  }
+                  return ServerTrustAuthResponse(
+                    action: ServerTrustAuthResponseAction.PROCEED,
+                  );
+                },
+                onUpdateVisitedHistory: (controller, url, isReload) {
+                  final urlStr = url?.toString() ?? '';
+                  if (!AsnafJwtPolicy.isAuthenticatedPanelUrl(urlStr)) return;
+                  AsnafOpLog.line(
+                    AsnafOpLog.web,
+                    'ورود به پنل (hash) | ${AsnafOpLog.clip(urlStr)}',
+                  );
+                  unawaited(_extractAndSaveToken(silent: true, pageUrl: urlStr));
                 },
                 onDownloadStartRequest: (controller, request) {
                   unawaited(
@@ -2181,10 +2416,17 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                   return NavigationActionPolicy.CANCEL;
                 },
                 onLoadStop: (controller, url) async {
+                  final urlStr = url?.toString() ?? '';
+                  AsnafOpLog.line(
+                    AsnafOpLog.web,
+                    'load_stop | panel=${AsnafJwtPolicy.isAuthenticatedPanelUrl(urlStr)} '
+                    'loginPage=${AsnafJwtPolicy.isPublicOrLoginUrl(urlStr)} '
+                    'url=${AsnafOpLog.clip(urlStr)}',
+                  );
                   _syncBotWebViewApi();
                   await _extractAndSaveToken(
                     silent: true,
-                    pageUrl: url?.toString(),
+                    pageUrl: urlStr,
                   );
                   await _maybeOfferSaveCsvPage(controller, url);
                 },
@@ -2194,16 +2436,252 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
   }
 }
 
-class _ManualFullUpdateChoice {
-  const _ManualFullUpdateChoice._(this.action, this.meta);
+class _FullUpdatePlan {
+  const _FullUpdatePlan({
+    required this.startPage,
+    required this.endPage,
+    this.maxRecords,
+    this.resumeCheckpoint = false,
+  });
 
-  const _ManualFullUpdateChoice.testFirst5() : this._('test_first_5', null);
+  final int startPage;
+  final int endPage;
+  final int? maxRecords;
+  final bool resumeCheckpoint;
+}
 
-  const _ManualFullUpdateChoice.start(AsnafMeta m) : this._('start', m);
+class _FullUpdatePlanDialog extends StatefulWidget {
+  const _FullUpdatePlanDialog({
+    required this.totalPages,
+    required this.totalCount,
+    this.checkpoint,
+  });
 
-  final String action;
-  final AsnafMeta? meta;
+  final int totalPages;
+  final int totalCount;
+  final AsnafRecoveryState? checkpoint;
 
-  bool get isTestFirst5 => action == 'test_first_5';
-  AsnafMeta? get metaOrNull => meta;
+  @override
+  State<_FullUpdatePlanDialog> createState() => _FullUpdatePlanDialogState();
+}
+
+class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
+  late final TextEditingController _fromCtrl;
+  late final TextEditingController _toCtrl;
+  late final TextEditingController _maxCtrl;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final cp = widget.checkpoint;
+    final defaultFrom = (cp != null && cp.currentPage > 0) ? cp.currentPage : 1;
+    _fromCtrl = TextEditingController(text: '$defaultFrom');
+    _toCtrl = TextEditingController(
+      text: '${widget.totalPages > 0 ? widget.totalPages : 1}',
+    );
+    _maxCtrl = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _fromCtrl.dispose();
+    _toCtrl.dispose();
+    _maxCtrl.dispose();
+    super.dispose();
+  }
+
+  int? _parsePositive(String raw) {
+    final n = int.tryParse(raw.trim());
+    if (n == null || n < 1) return null;
+    return n;
+  }
+
+  int _approxCount(int start, int end, int? max) {
+    final pages = (end - start + 1).clamp(1, 100000);
+    late final int approx;
+    if (start == 1 && end == widget.totalPages && widget.totalCount > 0) {
+      approx = widget.totalCount;
+    } else {
+      final perPage = widget.totalPages > 0
+          ? (widget.totalCount / widget.totalPages).round().clamp(1, 50)
+          : 20;
+      approx = pages * perPage;
+    }
+    if (max != null && max > 0 && max < approx) return max;
+    return approx;
+  }
+
+  void _submit({required bool resume}) {
+    if (resume) {
+      final cp = widget.checkpoint;
+      if (cp == null) return;
+      Navigator.pop(
+        context,
+        _FullUpdatePlan(
+          startPage: cp.startPage,
+          endPage: cp.endPage,
+          resumeCheckpoint: true,
+        ),
+      );
+      return;
+    }
+    final start = _parsePositive(_fromCtrl.text);
+    final end = _parsePositive(_toCtrl.text);
+    final maxRaw = _maxCtrl.text.trim();
+    final max = maxRaw.isEmpty ? null : _parsePositive(maxRaw);
+    if (start == null || end == null) {
+      setState(() => _error = 'شماره صفحه باید عدد بزرگ‌تر از صفر باشد.');
+      return;
+    }
+    if (end < start) {
+      setState(() => _error = 'صفحهٔ پایان نباید از صفحهٔ شروع کوچک‌تر باشد.');
+      return;
+    }
+    if (maxRaw.isNotEmpty && max == null) {
+      setState(() => _error = 'حداکثر تعداد باید عدد بزرگ‌تر از صفر باشد، یا خالی بماند.');
+      return;
+    }
+    final lastPage = widget.totalPages > 0 ? widget.totalPages : end;
+    Navigator.pop(
+      context,
+      _FullUpdatePlan(
+        startPage: start,
+        endPage: end > lastPage ? lastPage : end,
+        maxRecords: max,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final start = _parsePositive(_fromCtrl.text) ?? 1;
+    final end = _parsePositive(_toCtrl.text) ?? start;
+    final maxRaw = _maxCtrl.text.trim();
+    final max = maxRaw.isEmpty ? null : _parsePositive(maxRaw);
+    final planned = end >= start ? _approxCount(start, end, max) : 0;
+    final hours = AsnafHumanPace.estimateHoursForCount(planned);
+    final cp = widget.checkpoint;
+
+    return AlertDialog(
+      title: const Text('بروزرسانی کامل'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'در API حدود ${widget.totalCount} پرونده در ${widget.totalPages} صفحه است.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              if (cp != null) ...[
+                const SizedBox(height: 12),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'پیشرفت ناتمام: صفحه ${cp.currentPage} '
+                          '(مورد ${cp.currentIndexInPage}) — ${cp.processedCount} پرونده پردازش شده.',
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'اگر توکن قطع شد، «ادامه از همان‌جا» را بزنید تا از صفحهٔ اول تکرار نشود.',
+                        ),
+                        const SizedBox(height: 8),
+                        FilledButton.tonal(
+                          onPressed: () => _submit(resume: true),
+                          child: Text('ادامه از صفحه ${cp.currentPage}'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              Text(
+                cp == null ? 'محدوده این اجرا' : 'یا محدودهٔ جدید',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _fromCtrl,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: 'از صفحه',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setState(() => _error = null),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: _toCtrl,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      decoration: const InputDecoration(
+                        labelText: 'تا صفحه',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (_) => setState(() => _error = null),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _maxCtrl,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'حداکثر تعداد این اجرا (اختیاری)',
+                  hintText: 'مثلاً ۴۰۰ — خالی یعنی همهٔ صفحات انتخاب‌شده',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (_) => setState(() => _error = null),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                planned > 0
+                    ? 'تخمین این اجرا: حدود $planned پرونده، ${hours.toStringAsFixed(1)} ساعت.'
+                    : 'محدوده را وارد کنید.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('بازگشت'),
+        ),
+        FilledButton(
+          onPressed: () => _submit(resume: false),
+          child: const Text('شروع'),
+        ),
+      ],
+    );
+  }
 }

@@ -61,11 +61,13 @@ class AsnafJwtPolicy {
 
 /// خطای احراز هویت / مسدودسازی API اصناف — بازیابی باید متوقف شود.
 class AsnafApiAuthException implements Exception {
-  AsnafApiAuthException(this.statusCode, this.url);
+  AsnafApiAuthException(this.statusCode, this.url, {this.fromWebView = false});
 
   final int statusCode;
   final String url;
+  final bool fromWebView;
 
   @override
-  String toString() => 'Asnaf API auth/block ($statusCode) for $url';
+  String toString() =>
+      'Asnaf API auth/block ($statusCode${fromWebView ? ', webview' : ', http'}) for $url';
 }

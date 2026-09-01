@@ -8,6 +8,7 @@ import 'package:injast_admin/file_management/address_geocoding_service.dart';
 import 'package:injast_admin/import_sync/asnaf_api_throttle.dart';
 import 'package:injast_admin/import_sync/asnaf_fetch_pace.dart';
 import 'package:injast_admin/import_sync/asnaf_jwt_policy.dart';
+import 'package:injast_admin/import_sync/asnaf_op_log.dart';
 import 'package:injast_admin/import_sync/asnaf_webview_api.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
 
@@ -91,7 +92,7 @@ class AsnafBotClient {
         ),
       );
       final pageJson = await _getJson(
-        '$_base/parvaneh/?management=True&page=$page',
+        '$_base/parvaneh/?page=$page&management=True',
         token,
         retryOn429: true,
       );
@@ -190,12 +191,18 @@ class AsnafBotClient {
     required String token,
     required int page,
   }) async {
+    final sw = Stopwatch()..start();
     final pageJson = await _getJson(
-      '$_base/parvaneh/?management=True&page=$page',
+      '$_base/parvaneh/?page=$page&management=True',
       token,
       retryOn429: true,
     );
-    return _extractResults(pageJson);
+    final rows = _extractResults(pageJson);
+    AsnafOpLog.line(
+      AsnafOpLog.api,
+      'لیست صفحه $page | rows=${rows.length} | ${sw.elapsedMilliseconds}ms',
+    );
+    return rows;
   }
 
   /// همان لیست صفحه به‌همراه `count` / تعداد صفحات (بدون endpoint جدا).
@@ -204,12 +211,16 @@ class AsnafBotClient {
     required int page,
   }) async {
     final pageJson = await _getJson(
-      '$_base/parvaneh/?management=True&page=$page',
+      '$_base/parvaneh/?page=$page&management=True',
       token,
       retryOn429: true,
     );
     final rows = _extractResults(pageJson);
     final meta = _metaFromPageJson(pageJson, rows.length);
+    AsnafOpLog.line(
+      AsnafOpLog.api,
+      'لیست+متا صفحه $page | rows=${rows.length} count=${meta.totalCount} pages=${meta.totalPages}',
+    );
     return (rows: rows, meta: meta);
   }
 
@@ -276,8 +287,20 @@ class AsnafBotClient {
     required bool includeDocs,
     required bool geocodeIfMissing,
   }) async {
+    final sw = Stopwatch()..start();
+    AsnafOpLog.line(
+      AsnafOpLog.record,
+      'شروع id=$parvanehId docs=$includeDocs geocode=$geocodeIfMissing',
+    );
     final detail = await _getJson('$_base/parvaneh/$parvanehId/', token, retryOn429: true);
     final payload = _mapParvandePayload(detail, codeCo);
+    AsnafOpLog.line(
+      AsnafOpLog.record,
+      'جزئیات id=$parvanehId | واحد=${AsnafOpLog.clip(payload['name_store'] ?? '', 40)} | '
+      'آدرس=${(payload['address_store'] ?? '').isEmpty ? 'خالی' : 'ok'} | '
+      'lat=${payload['lat_store']?.isEmpty == true ? 'خالی' : 'ok'} | '
+      'بدهی=${payload['money'] ?? ''}',
+    );
 
     if (includeDocs) {
       await AsnafApiThrottle.instance.randomBetweenSteps();
@@ -297,6 +320,11 @@ class AsnafBotClient {
         'response=${_docsResponseShape(docs)}',
         name: 'asnaf_import_docs',
       );
+      AsnafOpLog.line(
+        AsnafOpLog.record,
+        'مدارک id=$parvanehId | raw=${rawDocsList.length} normalized=${normalizedDocs.length} '
+        'با_لینک=$withLink shape=${_docsResponseShape(docs)}',
+      );
       payload['_docs_json'] = jsonEncode(normalizedDocs);
       payload['_raste_name'] = _toStr(detail['raste_info']?['isic']?['title']);
       payload['_raste_code'] = _toStr(detail['raste_info']?['isic']?['isic']);
@@ -306,6 +334,7 @@ class AsnafBotClient {
       final lat = payload['lat_store']?.trim() ?? '';
       final lon = payload['long_store']?.trim() ?? '';
       if (lat.isEmpty || lon.isEmpty) {
+        AsnafOpLog.line(AsnafOpLog.geo, 'مختصات خالی — ژئوکد id=$parvanehId');
         final geocoded = await AddressGeocodingService.instance.resolve(
           address: payload['address_store'] ?? '',
           state: payload['state_store'] ?? '',
@@ -314,11 +343,20 @@ class AsnafBotClient {
         if (geocoded != null) {
           payload['lat_store'] = geocoded.$1;
           payload['long_store'] = geocoded.$2;
+          AsnafOpLog.line(AsnafOpLog.geo, 'ژئوکد موفق id=$parvanehId');
+        } else {
+          AsnafOpLog.line(AsnafOpLog.geo, 'ژئوکد ناموفق id=$parvanehId');
         }
         await AddressGeocodingService.instance.pauseBetweenImports();
+      } else {
+        AsnafOpLog.line(AsnafOpLog.geo, 'مختصات از API موجود است id=$parvanehId');
       }
     }
 
+    AsnafOpLog.line(
+      AsnafOpLog.record,
+      'پایان ساخت پیش‌نویس id=$parvanehId | ${sw.elapsedMilliseconds}ms',
+    );
     return ImportDraftRecord(
       clientTempId: parvanehId,
       payload: payload.map((k, v) => MapEntry(k, v.toString())),
@@ -409,58 +447,94 @@ class AsnafBotClient {
     String token, {
     bool retryOn429 = false,
   }) async {
+    final short = AsnafOpLog.shortUrl(url);
     final viaWeb = webViewApi;
     if (viaWeb != null) {
+      final sw = Stopwatch()..start();
       try {
-        return await viaWeb.getJson(url, token);
-      } on AsnafApiAuthException {
+        final json = await viaWeb.getJson(url, token);
+        AsnafOpLog.line(
+          AsnafOpLog.api,
+          'OK via=webview $short | ${sw.elapsedMilliseconds}ms',
+        );
+        return json;
+      } on AsnafApiAuthException catch (e) {
+        AsnafOpLog.line(
+          AsnafOpLog.api,
+          'AUTH via=webview status=${e.statusCode} $short',
+          error: e,
+        );
         rethrow;
       } catch (e) {
-        log(
-          'webview_api_fallback_http | url=$url | err=$e',
-          name: 'AsnafSite',
+        AsnafOpLog.line(
+          AsnafOpLog.api,
+          'webview شکست — HTTP کمکی زده نشد (پنل با JWT داخل XHR کار می‌کند؛ HTTP خارجی 401/429 می‌دهد)',
+          error: e,
         );
+        rethrow;
       }
     }
 
+    final cookieHeader = await viaWeb?.collectCookieHeader() ?? '';
     var attempt = 0;
+    var authScheme = 'JWT';
     while (true) {
       attempt++;
       try {
         await AsnafApiThrottle.instance.waitTurn();
+        final sw = Stopwatch()..start();
         final res = await http
             .get(
               Uri.parse(url),
               headers: {
-                'Authorization': 'JWT $token',
+                'Authorization': '$authScheme $token',
                 'Accept': 'application/json, text/plain, */*',
                 'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
                 'Origin': 'https://iranianasnaf.ir',
                 'Referer': 'https://iranianasnaf.ir/panel/',
                 'User-Agent': AsnafJwtPolicy.browserUserAgent,
+                if (cookieHeader.isNotEmpty) 'Cookie': cookieHeader,
               },
             )
             .timeout(_requestTimeout);
         if (res.statusCode >= 200 && res.statusCode < 300) {
+          AsnafOpLog.line(
+            AsnafOpLog.api,
+            'OK via=http $short | status=${res.statusCode} bytes=${res.bodyBytes.length} '
+            '| ${sw.elapsedMilliseconds}ms attempt=$attempt',
+          );
           return jsonDecode(res.body);
         }
+        AsnafOpLog.line(
+          AsnafOpLog.api,
+          'HTTP ${res.statusCode} $short | ${sw.elapsedMilliseconds}ms attempt=$attempt',
+        );
         if (res.statusCode == 401 || res.statusCode == 403) {
+          if (authScheme == 'JWT') {
+            AsnafOpLog.line(AsnafOpLog.api, 'HTTP 401 با JWT — تلاش Bearer');
+            authScheme = 'Bearer';
+            continue;
+          }
           throw AsnafApiAuthException(res.statusCode, url);
         }
         if (retryOn429 && res.statusCode == 429 && attempt < 6) {
+          AsnafOpLog.line(AsnafOpLog.api, '429 — backoff attempt=$attempt $short');
           await AsnafApiThrottle.instance.backoff429(attempt);
           continue;
         }
         throw Exception('API error ${res.statusCode} for $url');
       } catch (e) {
+        if (e is AsnafApiAuthException) rethrow;
         if (_isRetryableNetwork(e) && attempt < 4) {
-          log(
-            'network_retry | attempt=$attempt | url=$url | err=$e',
-            name: 'AsnafSite',
+          AsnafOpLog.line(
+            AsnafOpLog.api,
+            'retry شبکه attempt=$attempt $short | $e',
+            error: e,
           );
           await AsnafApiThrottle.instance.backoffNetworkError(attempt);
           continue;
         }
+        AsnafOpLog.line(AsnafOpLog.api, 'شکست نهایی $short | $e', error: e);
         rethrow;
       }
     }

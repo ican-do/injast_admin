@@ -15,6 +15,7 @@ import 'package:injast_admin/features/parvande_new/new_parvande_page.dart';
 import 'package:injast_admin/features/permissions/manage_access_page.dart';
 import 'package:injast_admin/features/personnel/manage_personnel_page.dart';
 import 'package:injast_admin/features/personnel/personnel_display_page.dart';
+import 'package:injast_admin/features/portal/manage_portal_hub_page.dart';
 import 'package:injast_admin/features/raste/manage_raste_page.dart';
 import 'package:injast_admin/features/rate_sheets/manage_rate_sheets_page.dart';
 import 'package:injast_admin/features/reports/bazrasi_reports_hub_page.dart';
@@ -560,6 +561,13 @@ class _PanelItemTile extends StatelessWidget {
                 currentUserId: idUser.isEmpty ? null : idUser,
               ));
               return;
+            case 'manage_portal':
+              if (!requireCodeCo()) return;
+              await push(ManagePortalHubPage(
+                codeCo: codeCo,
+                currentUserId: idUser.isEmpty ? null : idUser,
+              ));
+              return;
           }
 
           if (!context.mounted) return;
@@ -916,6 +924,12 @@ const List<_PanelCategory> _panelCategories = [
           backgroundColor: Color(0xFFE1F5FE),
           iconColor: Color(0xFF0277BD),
           actionKey: 'manage_tutorials'),
+      _PanelItem(
+          label: 'درگاه دیجیتال وب',
+          icon: FluentIcons.globe_24_regular,
+          backgroundColor: Color(0xFFE3F2FD),
+          iconColor: Color(0xFF1A56DB),
+          actionKey: 'manage_portal'),
     ],
   ),
 ];

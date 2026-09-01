@@ -3,6 +3,7 @@ import 'dart:developer' show log;
 import 'package:injast_admin/file_management/map_ir_geocoding.dart';
 import 'package:injast_admin/file_management/province_geo_fence.dart';
 import 'package:injast_admin/import_sync/asnaf_bot_client.dart';
+import 'package:injast_admin/import_sync/asnaf_op_log.dart';
 
 const _logName = 'address_geocode';
 
@@ -31,7 +32,16 @@ class AddressGeocodingService {
       city: normalizedCity,
       address: normalizedAddress,
     );
-    if (variants.isEmpty) return null;
+    if (variants.isEmpty) {
+      AsnafOpLog.line(AsnafOpLog.geo, 'آدرس خالی — ژئوکد انجام نشد');
+      return null;
+    }
+
+    AsnafOpLog.line(
+      AsnafOpLog.geo,
+      'شروع | استان=$normalizedState شهر=$normalizedCity '
+      'آدرس=${AsnafOpLog.clip(normalizedAddress, 80)} variants=${variants.length}',
+    );
 
     final fence = ProvinceGeoFence.fromState(normalizedState);
     for (final query in variants) {
@@ -39,6 +49,7 @@ class AddressGeocodingService {
         final hit = await _neshanGeo.searchAddress(query);
         if (hit != null &&
             _isInsideProvinceFence(fence, hit.latitude, hit.longitude)) {
+          AsnafOpLog.line(AsnafOpLog.geo, 'موفق map.ir/نشان+ | q=${AsnafOpLog.clip(query, 60)}');
           return (
             hit.latitude.toString(),
             hit.longitude.toString(),
@@ -46,16 +57,27 @@ class AddressGeocodingService {
         }
       } catch (e) {
         log('neshan plus search failed: $e | q=$query', name: _logName);
+        AsnafOpLog.line(AsnafOpLog.geo, 'خطا جستجو | $e');
       }
     }
 
     final neshan = await _neshanDirect.geocodeAddress(variants.first);
     await Future<void>.delayed(_pauseBetweenRows);
-    if (neshan == null) return null;
+    if (neshan == null) {
+      AsnafOpLog.line(AsnafOpLog.geo, 'ناموفق — هیچ مختصاتی برنگشت');
+      return null;
+    }
     final lat = double.tryParse(neshan.$1);
     final lng = double.tryParse(neshan.$2);
-    if (lat == null || lng == null) return null;
-    if (!_isInsideProvinceFence(fence, lat, lng)) return null;
+    if (lat == null || lng == null) {
+      AsnafOpLog.line(AsnafOpLog.geo, 'پاسخ نشان نامعتبر');
+      return null;
+    }
+    if (!_isInsideProvinceFence(fence, lat, lng)) {
+      AsnafOpLog.line(AsnafOpLog.geo, 'خارج از محدوده استان — رد شد');
+      return null;
+    }
+    AsnafOpLog.line(AsnafOpLog.geo, 'موفق geocode مستقیم نشان');
     return neshan;
   }
 
