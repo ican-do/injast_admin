@@ -113,30 +113,64 @@ class AsnafWebViewApi {
 
     Object? lastError;
     for (final candidate in candidates) {
-      try {
-        final value = await _pageXhrGet(candidate, token);
-        final status = _toInt(value['status']);
-        final body = value['body']?.toString() ?? '';
-        AsnafOpLog.line(
-          AsnafOpLog.api,
-          'XHR-page ${AsnafOpLog.shortUrl(candidate)} | status=$status '
-          'via=${value['via']} body_len=${body.length} err=${value['error'] ?? ''}',
-        );
-        if (status >= 200 && status < 300 && body.isNotEmpty) {
-          return jsonDecode(body);
+      for (var attempt = 1; attempt <= 6; attempt++) {
+        try {
+          final value = await _pageXhrGet(candidate, token);
+          final status = _toInt(value['status']);
+          final body = value['body']?.toString() ?? '';
+          final err = value['error']?.toString() ?? '';
+          AsnafOpLog.line(
+            AsnafOpLog.api,
+            'XHR-page ${AsnafOpLog.shortUrl(candidate)} | status=$status '
+            'via=${value['via']} body_len=${body.length} err=$err attempt=$attempt',
+          );
+          if (status >= 200 && status < 300 && body.isNotEmpty) {
+            return jsonDecode(body);
+          }
+          if (status == 401 || status == 403) {
+            lastError = AsnafApiAuthException(status, candidate, fromWebView: true);
+            break;
+          }
+          lastError = Exception('API error $status for $candidate');
+          if (status == 429 && attempt < 6) {
+            AsnafOpLog.line(
+              AsnafOpLog.api,
+              '429 محدودیت نرخ — صبر و تلاش دوباره attempt=$attempt '
+              '${AsnafOpLog.shortUrl(candidate)}',
+            );
+            await AsnafApiThrottle.instance.backoff429(attempt);
+            continue;
+          }
+          final retryable = status == 0 ||
+              err == 'timeout' ||
+              err == 'xhr_error' ||
+              err == 'xhr_timeout';
+          if (retryable && attempt < 6) {
+            AsnafOpLog.line(
+              AsnafOpLog.api,
+              'تلاش دوباره لیست/جزئیات بعد از $err | attempt=$attempt',
+            );
+            await AsnafApiThrottle.instance.backoffNetworkError(
+              attempt.clamp(1, 3),
+            );
+            continue;
+          }
+          break;
+        } catch (e) {
+          lastError = e;
+          AsnafOpLog.line(
+            AsnafOpLog.api,
+            'XHR-page exception ${AsnafOpLog.shortUrl(candidate)} | $e',
+          );
+          if (attempt < 6) {
+            await AsnafApiThrottle.instance.backoffNetworkError(
+              attempt.clamp(1, 3),
+            );
+            continue;
+          }
         }
-        if (status == 401 || status == 403) {
-          lastError = AsnafApiAuthException(status, candidate, fromWebView: true);
-          continue;
-        }
-        lastError = Exception('API error $status for $candidate');
-      } catch (e) {
-        lastError = e;
-        AsnafOpLog.line(
-          AsnafOpLog.api,
-          'XHR-page exception ${AsnafOpLog.shortUrl(candidate)} | $e',
-        );
       }
+      if (lastError is AsnafApiAuthException) break;
     }
     if (lastError is AsnafApiAuthException) throw lastError;
     throw lastError ?? Exception('WebView XHR failed for $url');
@@ -181,9 +215,13 @@ class AsnafWebViewApi {
     if (x.status != 200 || !x.body) continue;
     var got = abs(x.url);
     if (!got || got.pathname !== want.pathname) continue;
-    var wp = want.searchParams.get('page');
-    var gp = got.searchParams.get('page');
-    if (wp && gp && wp !== gp) continue;
+    function qMatch(key) {
+      var a = want.searchParams.get(key);
+      var b = got.searchParams.get(key);
+      if (!a && !b) return true;
+      return a === b;
+    }
+    if (!qMatch('page') || !qMatch('parvaneh') || !qMatch('user')) continue;
     return JSON.stringify({body: x.body});
   }
   return JSON.stringify({body: ''});
@@ -225,9 +263,15 @@ class AsnafWebViewApi {
   xhr.withCredentials = false;
   if (token) xhr.setRequestHeader('Authorization', 'JWT ' + token);
   xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
+  xhr.timeout = 28000;
   xhr.onload = function() {
     window.__asnafJobs[id] = {
       done: true, status: xhr.status, body: xhr.responseText || '', via: 'xhr-page'
+    };
+  };
+  xhr.ontimeout = function() {
+    window.__asnafJobs[id] = {
+      done: true, status: 0, error: 'xhr_timeout', body: '', via: 'xhr-page'
     };
   };
   xhr.onerror = function() {
@@ -247,8 +291,8 @@ class AsnafWebViewApi {
       return {'status': 0, 'error': 'job_id_empty', 'via': 'xhr-page'};
     }
 
-    for (var i = 0; i < 80; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 80));
+    for (var i = 0; i < 300; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
       final raw = await _controller.evaluateJavascript(
         source: 'JSON.stringify(window.__asnafJobs[${jsonEncode(id)}] || {done:false})',
         contentWorld: ContentWorld.PAGE,

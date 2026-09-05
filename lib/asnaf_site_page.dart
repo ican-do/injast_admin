@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:injast_admin/asnaf_live_operation_dialog.dart';
 import 'package:injast_admin/file_management/address_geocoding_service.dart';
+import 'package:injast_admin/import_sync/asnaf_api_throttle.dart';
 import 'package:injast_admin/import_sync/asnaf_bot_client.dart';
 import 'package:injast_admin/import_sync/asnaf_first_five_test_report_store.dart';
 import 'package:injast_admin/import_sync/asnaf_fetch_pace.dart';
@@ -542,6 +543,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   String _sessionTitle(String sessionMode) => switch (sessionMode) {
         'full' => 'بروزرسانی کامل اطلاعات',
+        'single_page' => 'بروزرسانی یک صفحه',
         'latest' => 'بروزرسانی جدیدترین موارد',
         'test_first_5' => 'تست ۵ پرونده',
         'test_first_5_debt' => 'تست ۵ پروندهٔ دارای بدهی',
@@ -587,6 +589,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         'test_first_5' => 'آمادهٔ تست ۵ پرونده…',
         'test_first_5_debt' => 'آمادهٔ تست بدهی…',
         'full' => 'آمادهٔ بروزرسانی کامل…',
+        'single_page' => 'آمادهٔ بروزرسانی یک صفحه…',
         'latest' => 'آمادهٔ بروزرسانی جدیدترین‌ها…',
         'debt_full' => 'آمادهٔ بروزرسانی بدهی…',
         'server_send' => 'آمادهٔ ارسال به سرور…',
@@ -619,6 +622,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
   String _opTagForSession(String sessionMode) => switch (sessionMode) {
         'full' => AsnafOpLog.full,
+        'single_page' => AsnafOpLog.full,
         'latest' => AsnafOpLog.latest,
         'test_first_5' || 'test_first_5_debt' => AsnafOpLog.test5,
         'server_send' => AsnafOpLog.send,
@@ -918,6 +922,13 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.filter_1_rounded),
+              title: const Text('یک صفحه'),
+              subtitle: const Text('فقط همان شماره صفحه، مثلاً ۲۱'),
+              onTap: () => Navigator.pop(ctx, 'one_page'),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.sync_alt_rounded),
               title: const Text('بروزرسانی کامل'),
               subtitle: const Text('انتخاب صفحه، تعداد، یا ادامه از آخرین توقف'),
@@ -956,6 +967,9 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         break;
       case 'full':
         await _startFullAfterChoice(token);
+        break;
+      case 'one_page':
+        await _startSinglePageAfterChoice(token);
         break;
       default:
         break;
@@ -1019,6 +1033,53 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         overrideEndPage: plan.resumeCheckpoint ? null : plan.endPage,
         maxRecords: plan.maxRecords,
         resumeFromCheckpoint: plan.resumeCheckpoint,
+      ),
+    );
+  }
+
+  Future<void> _startSinglePageAfterChoice(String token) async {
+    AsnafOpLog.line(AsnafOpLog.full, 'یک صفحه — دریافت تعداد صفحات از API…');
+    late AsnafMeta planMeta;
+    try {
+      planMeta = await _bot.fetchMeta(token);
+    } catch (e) {
+      AsnafOpLog.line(AsnafOpLog.full, 'خطا در دریافت متا: $e', error: e);
+      if (await _handleAsnafAuthFailure(e)) return;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('نتوانستیم لیست پرونده‌ها را بگیریم: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    final page = await showDialog<int>(
+      context: context,
+      builder: (ctx) => _SinglePagePlanDialog(totalPages: planMeta.totalPages),
+    );
+    if (page == null) {
+      AsnafOpLog.line(AsnafOpLog.full, 'یک صفحه — شروع تأیید نشد');
+      return;
+    }
+    final planned = _plannedCountForRange(
+      startPage: page,
+      endPage: page,
+      apiTotalCount: planMeta.totalCount,
+      apiTotalPages: planMeta.totalPages,
+    );
+    AsnafOpLog.line(
+      AsnafOpLog.full,
+      'یک صفحه تأیید شد | page=$page planned=$planned totalPages=${planMeta.totalPages}',
+    );
+    await _openLiveOperationDialogThenRun(
+      sessionMode: 'single_page',
+      planMeta: planMeta,
+      plannedCount: planned,
+      run: () => _runRecovery(
+        recoveryMode: 'single_page',
+        token: token,
+        planMeta: planMeta,
+        overrideStartPage: page,
+        overrideEndPage: page,
       ),
     );
   }
@@ -1428,6 +1489,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
 
       var sessionAdded = 0;
       var hitRecordCap = false;
+      var pageFetchFailed = false;
 
       for (var page = currentPage; page <= endPage; page++) {
         if (authBlocked || hitRecordCap) break;
@@ -1441,7 +1503,14 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             authBlocked = true;
             break;
           }
-          rethrow;
+          pageFetchFailed = true;
+          lastPersistedPage = page;
+          lastPersistedIndexInPage = 0;
+          _appendLog(
+            'لیست صفحه $page بعد از چند تلاش ناموفق — پیشرفت ذخیره شد؛ از همین شماره ادامه دهید',
+            op: _opTagForSession(recoveryMode),
+          );
+          break;
         }
         final startIndex = (page == currentPage) ? currentIndex : 0;
         _appendLog(
@@ -1525,6 +1594,16 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
             _failedCount = failed;
             _pushRecoveryProgress(id, 'error', e.toString());
             _appendLog('خطای پرونده id=$id | $e', op: _opTagForSession(recoveryMode));
+            if (e.toString().contains('429')) {
+              _appendLog(
+                'محدودیت نرخ API — صبر قبل از پرونده بعدی',
+                op: _opTagForSession(recoveryMode),
+              );
+              if (mounted) {
+                setState(() => _operationStatus = 'محدودیت نرخ API — کمی صبر…');
+              }
+              await AsnafApiThrottle.instance.backoff429(2);
+            }
           }
 
           if (authBlocked) break;
@@ -1562,17 +1641,20 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
           }
         }
         currentIndex = 0;
-        if (hitRecordCap || authBlocked || _stopRequested) break;
+        if (hitRecordCap || authBlocked || _stopRequested || pageFetchFailed) break;
         await Future<void>.delayed(AsnafFetchPace.current.pauseAfterListPage);
       }
 
-      final incomplete = _stopRequested || authBlocked || hitRecordCap;
+      final incomplete =
+          _stopRequested || authBlocked || hitRecordCap || pageFetchFailed;
       if (incomplete) {
         final reason = authBlocked
             ? 'قطع احراز هویت — پیشرفت ذخیره شد (صفحه $lastPersistedPage)'
             : (hitRecordCap
                 ? 'سقف تعداد این اجرا — می‌توانید بعداً از همین صفحه ادامه دهید'
-                : 'توقف توسط کاربر');
+                : (pageFetchFailed
+                    ? 'لیست صفحه $lastPersistedPage موقتاً نیامد — از همان شماره ادامه دهید'
+                    : 'توقف توسط کاربر'));
         _appendLog(reason, op: _opTagForSession(recoveryMode));
         if (mounted) {
           setState(() {
@@ -1580,7 +1662,9 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                 ? 'متوقف — توکن منقضی شد؛ لاگین کنید و از صفحه $lastPersistedPage ادامه دهید'
                 : (hitRecordCap
                     ? 'متوقف — سقف تعداد رسید؛ پیشرفت در صفحه $lastPersistedPage ذخیره شد'
-                    : 'عملیات متوقف شد');
+                    : (pageFetchFailed
+                        ? 'متوقف — لیست صفحه $lastPersistedPage نیامد؛ همان شماره را بزنید و شروع کنید'
+                        : 'عملیات متوقف شد'));
           });
         }
         await _stateStore.saveState(
@@ -1604,6 +1688,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
         setState(() {
           _operationStatus = switch (recoveryMode) {
             'full' => 'عملیات بروز رسانی کامل اطلاعات به اتمام رسید',
+            'single_page' => 'عملیات بروزرسانی یک صفحه به اتمام رسید',
             'latest' => 'عملیات بروز رسانی جدیدترین موارد به اتمام رسید',
             'debt_full' => 'عملیات بروز رسانی بدهی پرونده‌ها به اتمام رسید',
             'debt_latest' => 'عملیات بروز رسانی بدهی پرونده‌ها به اتمام رسید',
@@ -2184,7 +2269,7 @@ class _AsnafSitePageState extends State<AsnafSitePage> {
                       _asnafToolbarAction(
                         label: 'بروزرسانی',
                         icon: Icons.sync_rounded,
-                        tooltip: 'تست ۵ پرونده، جدیدترین‌ها یا بروزرسانی کامل',
+                        tooltip: 'تست ۵ پرونده، یک صفحه، جدیدترین‌ها یا بروزرسانی کامل',
                         onPressed: _busy ? null : _onUpdatePressed,
                       ),
                       _asnafToolbarSaveButton(),
@@ -2477,9 +2562,7 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
     final cp = widget.checkpoint;
     final defaultFrom = (cp != null && cp.currentPage > 0) ? cp.currentPage : 1;
     _fromCtrl = TextEditingController(text: '$defaultFrom');
-    _toCtrl = TextEditingController(
-      text: '${widget.totalPages > 0 ? widget.totalPages : 1}',
-    );
+    _toCtrl = TextEditingController();
     _maxCtrl = TextEditingController();
   }
 
@@ -2527,11 +2610,18 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
       return;
     }
     final start = _parsePositive(_fromCtrl.text);
-    final end = _parsePositive(_toCtrl.text);
+    final endRaw = _toCtrl.text.trim();
+    final end = endRaw.isEmpty
+        ? (widget.totalPages > 0 ? widget.totalPages : start)
+        : _parsePositive(endRaw);
     final maxRaw = _maxCtrl.text.trim();
     final max = maxRaw.isEmpty ? null : _parsePositive(maxRaw);
-    if (start == null || end == null) {
-      setState(() => _error = 'شماره صفحه باید عدد بزرگ‌تر از صفر باشد.');
+    if (start == null) {
+      setState(() => _error = 'شماره صفحه شروع را وارد کنید.');
+      return;
+    }
+    if (end == null) {
+      setState(() => _error = 'صفحهٔ پایان باید عدد باشد، یا خالی بماند (تا آخر).');
       return;
     }
     if (end < start) {
@@ -2556,7 +2646,10 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
   @override
   Widget build(BuildContext context) {
     final start = _parsePositive(_fromCtrl.text) ?? 1;
-    final end = _parsePositive(_toCtrl.text) ?? start;
+    final endRaw = _toCtrl.text.trim();
+    final end = endRaw.isEmpty
+        ? (widget.totalPages > 0 ? widget.totalPages : start)
+        : (_parsePositive(endRaw) ?? start);
     final maxRaw = _maxCtrl.text.trim();
     final max = maxRaw.isEmpty ? null : _parsePositive(maxRaw);
     final planned = end >= start ? _approxCount(start, end, max) : 0;
@@ -2609,7 +2702,9 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
               ],
               const SizedBox(height: 16),
               Text(
-                cp == null ? 'محدوده این اجرا' : 'یا محدودهٔ جدید',
+                cp == null
+                    ? 'فقط شماره صفحه‌ای که باید از آن شروع شود را بزنید. خالی بودن «تا صفحه» یعنی تا آخرین صفحه.'
+                    : 'یا شماره صفحه جدید',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
               const SizedBox(height: 8),
@@ -2621,7 +2716,8 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       decoration: const InputDecoration(
-                        labelText: 'از صفحه',
+                        labelText: 'شماره صفحه',
+                        hintText: 'مثلاً ۱۱',
                         border: OutlineInputBorder(),
                       ),
                       onChanged: (_) => setState(() => _error = null),
@@ -2633,9 +2729,10 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
                       controller: _toCtrl,
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      decoration: const InputDecoration(
-                        labelText: 'تا صفحه',
-                        border: OutlineInputBorder(),
+                      decoration: InputDecoration(
+                        labelText: 'تا صفحه (اختیاری)',
+                        hintText: 'خالی = ${widget.totalPages}',
+                        border: const OutlineInputBorder(),
                       ),
                       onChanged: (_) => setState(() => _error = null),
                     ),
@@ -2679,6 +2776,92 @@ class _FullUpdatePlanDialogState extends State<_FullUpdatePlanDialog> {
         ),
         FilledButton(
           onPressed: () => _submit(resume: false),
+          child: const Text('شروع'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SinglePagePlanDialog extends StatefulWidget {
+  const _SinglePagePlanDialog({required this.totalPages});
+
+  final int totalPages;
+
+  @override
+  State<_SinglePagePlanDialog> createState() => _SinglePagePlanDialogState();
+}
+
+class _SinglePagePlanDialogState extends State<_SinglePagePlanDialog> {
+  final _pageCtrl = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _pageCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final page = int.tryParse(_pageCtrl.text.trim());
+    if (page == null || page < 1) {
+      setState(() => _error = 'شماره صفحه را وارد کنید.');
+      return;
+    }
+    if (widget.totalPages > 0 && page > widget.totalPages) {
+      setState(() => _error = 'آخرین صفحه ${widget.totalPages} است.');
+      return;
+    }
+    Navigator.pop(context, page);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('بروزرسانی یک صفحه'),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'فقط پرونده‌های همین صفحه از سایت اصناف گرفته می‌شود. '
+              'در کل ${widget.totalPages} صفحه وجود دارد.',
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _pageCtrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: 'شماره صفحه',
+                hintText: 'مثلاً ۲۱',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
+              onSubmitted: (_) => _submit(),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('بازگشت'),
+        ),
+        FilledButton(
+          onPressed: _submit,
           child: const Text('شروع'),
         ),
       ],

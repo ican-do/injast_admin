@@ -37,9 +37,14 @@ class AsnafApiThrottle {
     await Future<void>.delayed(Duration(milliseconds: ms));
   }
 
-  /// پس از 429 — صبر طولانی‌تر قبل از تلاش بعدی.
+  /// پس از 429 — صبر طولانی قبل از تلاش بعدی (محدودیت نرخ API اصناف).
   Future<void> backoff429(int attempt) async {
-    final sec = (attempt * 4).clamp(4, 90);
+    final sec = switch (attempt) {
+      1 => 20,
+      2 => 40,
+      3 => 70,
+      _ => 90,
+    };
     await Future<void>.delayed(Duration(seconds: sec));
   }
 
