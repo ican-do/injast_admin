@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/server_config.dart';
 
 /// نوع محتوای پروانه
@@ -11,7 +11,7 @@ enum ParvanehContentKind { html, pdf, image }
 class MediaFileUrls {
   MediaFileUrls._();
 
-  static const mediaHost = 'http://194.5.175.180';
+  static String get mediaHost => mediaOrigin;
 
   /// تصویر دلخواه واحد صنفی (p1..p4)
   static String storeImageUrl({
@@ -19,7 +19,7 @@ class MediaFileUrls {
     required String idParvandeh,
     required int index,
   }) {
-    return '$serverApiBaseUrl/pic_injast/store/${codeCo}_${idParvandeh}p$index.jpg';
+    return '$mediaOrigin/pic_injast/store/${codeCo}_${idParvandeh}p$index.jpg';
   }
 
   /// URL قابل نمایش برای image_profile / licence_file / link_doc و …
@@ -50,7 +50,6 @@ class MediaFileUrls {
       final path = normalized.startsWith('/') ? normalized : '/$normalized';
       add('$serverApiBaseUrl$path'.replaceAll(' ', '%20'));
       add('$mediaHost$path'.replaceAll(' ', '%20'));
-      add('$mediaHost:8080$path'.replaceAll(' ', '%20'));
       return urls;
     }
 

@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/features/permissions/permission_catalog.dart';
 import 'package:injast_admin/features/permissions/user_permissions_api.dart';
 import 'package:injast_admin/features/shared/admin_ui.dart';

@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/file_management/store_image_service.dart';
 import 'package:injast_admin/local_cache/local_image_store.dart';
 import 'package:injast_admin/local_cache/parvande_local_db.dart';
@@ -40,7 +40,7 @@ class ImageUploadService {
       ..fields['filename'] = filename
       ..files.add(await http.MultipartFile.fromPath('image', localPath));
 
-    final streamed = await request.send().timeout(const Duration(minutes: 3));
+    final streamed = await http.send(request).timeout(const Duration(minutes: 3));
     final res = await http.Response.fromStream(streamed);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('آپلود $fieldKey ناموفق (${res.statusCode}): ${res.body}');

@@ -17,7 +17,9 @@ import 'package:injast_admin/file_management/excel_import/excel_import_shenase.d
 import 'package:injast_admin/file_management/hagh_ozviat_api.dart';
 import 'package:injast_admin/file_management/hagh_ozviat_member_dialog.dart';
 import 'package:injast_admin/file_management/hagh_ozviat_member_index.dart';
+import 'package:injast_admin/file_management/iran_region_bounds.dart';
 import 'package:injast_admin/file_management/parvande_full_edit_page.dart';
+import 'package:injast_admin/pos_web_service.dart';
 import 'package:injast_admin/file_management/parvande_license_dialog.dart';
 import 'package:injast_admin/file_management/parvande_map_dialog.dart';
 import 'package:injast_admin/file_management/parvande_permissions.dart';
@@ -110,6 +112,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
   String _selectedRaste = _allRasteFilter;
   String _selectedDebt = _allDebtFilter;
   String _selectedStatus = _allStatusFilter;
+  bool _insideRegion = true;
   Map<String, HaghOzviatMemberIndex> _haghIndex = {};
   bool _haghIndexLoaded = false;
 
@@ -121,7 +124,8 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
   bool get _hasActiveFilters =>
       _selectedRaste != _allRasteFilter ||
       _selectedDebt != _allDebtFilter ||
-      _selectedStatus != _allStatusFilter;
+      _selectedStatus != _allStatusFilter ||
+      !_insideRegion;
 
   List<String> get _rasteOptions {
     final values = (_searchPool.isEmpty ? _rows : _searchPool)
@@ -143,10 +147,13 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     return [_allStatusFilter, ...values];
   }
 
-  List<Map<String, dynamic>> get _filteredViewportRows => _applyFilters(_rows);
+  List<Map<String, dynamic>> get _filteredViewportRows =>
+      _applyFilters(_rows, applyRegion: true);
 
-  List<Map<String, dynamic>> get _filteredSearchPool =>
-      _applyFilters(_searchPool.isEmpty ? _rows : _searchPool);
+  List<Map<String, dynamic>> get _filteredSearchPool => _applyFilters(
+        _searchPool.isEmpty ? _rows : _searchPool,
+        applyRegion: false,
+      );
 
   List<Map<String, dynamic>> get _searchResults {
     final q = _searchCtrl.text.trim().toLowerCase();
@@ -163,7 +170,10 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
         .toList();
   }
 
-  List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> source) {
+  List<Map<String, dynamic>> _applyFilters(
+    List<Map<String, dynamic>> source, {
+    bool applyRegion = true,
+  }) {
     return source.where((item) {
       if (_selectedRaste != _allRasteFilter && item.raste != _selectedRaste) {
         return false;
@@ -178,8 +188,47 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
           _statusLabelFor(item) != _selectedStatus) {
         return false;
       }
+      if (applyRegion && !_matchesRegionFilter(item)) {
+        return false;
+      }
       return true;
     }).toList();
+  }
+
+  ({String? state, String? city}) _unionPlace() {
+    final union = PosWebService.instance.unionInfo;
+    final user = widget.sessionUser;
+    String? pick(List<String?> values) {
+      for (final v in values) {
+        final t = v?.trim() ?? '';
+        if (t.isNotEmpty && t.toLowerCase() != 'null') return t;
+      }
+      return null;
+    }
+
+    return (
+      state: pick([
+        union?['state_co']?.toString(),
+        user?['state_co']?.toString(),
+        user?['state_user']?.toString(),
+      ]),
+      city: pick([
+        union?['city_co']?.toString(),
+        user?['city_co']?.toString(),
+        user?['city_user']?.toString(),
+      ]),
+    );
+  }
+
+  bool _matchesRegionFilter(Map<String, dynamic> item) {
+    final place = _unionPlace();
+    final box = regionBoxFor(state: place.state, city: place.city);
+    if (box == null) return true;
+    final lat = double.tryParse(item.lat);
+    final lon = double.tryParse(item.lng);
+    if (lat == null || lon == null) return false;
+    final inside = box.contains(lat, lon);
+    return _insideRegion ? inside : !inside;
   }
 
   String _statusLabelFor(Map<String, dynamic> item) {
@@ -215,6 +264,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     _selectedRaste = _allRasteFilter;
     _selectedDebt = _allDebtFilter;
     _selectedStatus = _allStatusFilter;
+    _insideRegion = true;
     _onFiltersChanged();
   }
 
@@ -1225,7 +1275,9 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
                   ),
                 ),
               ),
-              if (_hasActiveFilters)
+              _regionSwitch(),
+              if (_hasActiveFilters) ...[
+                const SizedBox(width: 8),
                 TextButton.icon(
                   onPressed: _resetFilters,
                   style: TextButton.styleFrom(
@@ -1237,6 +1289,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
                   icon: const Icon(Icons.filter_alt_off, size: 16),
                   label: const Text('پاک کردن'),
                 ),
+              ],
             ],
           ),
           const SizedBox(height: 8),
@@ -1305,6 +1358,46 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _regionSwitch() {
+    final inside = _insideRegion;
+    final color = inside ? Colors.teal : Colors.deepOrange;
+    return Material(
+      color: color.shade50,
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        onTap: () {
+          _insideRegion = !_insideRegion;
+          _onFiltersChanged();
+        },
+        borderRadius: BorderRadius.circular(999),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                inside ? Icons.location_on : Icons.location_off,
+                size: 16,
+                color: color.shade800,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                inside ? 'داخل منطقه' : 'خارج از منطقه',
+                style: TextStyle(
+                  color: color.shade800,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(Icons.swap_horiz, size: 16, color: color.shade800),
+            ],
+          ),
+        ),
       ),
     );
   }

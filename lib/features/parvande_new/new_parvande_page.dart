@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/features/parvande_new/location_pick_dialog.dart';
 import 'package:injast_admin/features/parvande_new/place_api.dart';
 import 'package:injast_admin/features/parvande_new/searchable_place_field.dart';

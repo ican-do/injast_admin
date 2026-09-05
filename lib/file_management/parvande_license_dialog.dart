@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/file_management/media_file_urls.dart';
 import 'package:injast_admin/file_management/parvande_api.dart';
 import 'package:injast_admin/file_management/parvande_license_html.dart';

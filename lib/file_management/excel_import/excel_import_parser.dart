@@ -2,6 +2,7 @@ import 'dart:developer' show log;
 import 'dart:typed_data';
 
 import 'package:excel/excel.dart' hide Border;
+import 'package:injast_admin/file_management/excel_import/csv_header_mapper.dart';
 import 'package:injast_admin/file_management/excel_import/csv_import_parser.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_columns.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_models.dart';
@@ -28,7 +29,7 @@ typedef ExcelWorkbookFormat = ImportFileFormat;
 ImportFileFormat detectWorkbookFormat(Uint8List bytes) =>
     detectImportFormat(bytes);
 
-Future<List<ExcelParsedRow>> parseImportFileBytes(
+Future<ImportParseResult> parseImportFile(
   Uint8List bytes, {
   String? fileName,
 }) async {
@@ -38,41 +39,33 @@ Future<List<ExcelParsedRow>> parseImportFileBytes(
     name: _logName,
   );
 
-  final rows = switch (format) {
-    ImportFileFormat.csv => parseCsvBytes(bytes),
-    ImportFileFormat.xlsxZip => _parseXlsx(bytes),
+  final parsed = switch (format) {
+    ImportFileFormat.csv => parseCsvFile(bytes),
+    ImportFileFormat.xlsxZip => _parseXlsxFile(bytes),
     ImportFileFormat.unknown => throw Exception(
         'فرمت فایل شناسایی نشد. فایل CSV (.csv) یا Excel جدید (.xlsx) انتخاب کنید.',
       ),
   };
 
-  if (rows.isEmpty) {
-    log('parse result: zero data rows', name: _logName);
-    return rows;
-  }
-
-  final keys = rows.first.values.keys.toList();
   log(
-    'parse ok | rows=${rows.length} | columns=${keys.length} | '
-    'headers=${keys.take(8).join(' | ')}',
+    'parse ok | rows=${parsed.rows.length} | headers=${parsed.rawHeaders.length} | '
+    'match=${parsed.headerMatch.matchPercent}%',
     name: _logName,
   );
-
-  final missing = ExcelImportColumns.requiredForRegistration
-      .where((c) => !_headersContain(keys, c))
-      .toList();
-  if (missing.isNotEmpty) {
-    log('missing required columns: $missing', name: _logName);
-  }
-
-  return rows;
+  return parsed;
 }
+
+Future<List<ExcelParsedRow>> parseImportFileBytes(
+  Uint8List bytes, {
+  String? fileName,
+}) async =>
+    (await parseImportFile(bytes, fileName: fileName)).rows;
 
 @Deprecated('Use parseImportFileBytes')
 Future<List<ExcelParsedRow>> parseWorkbookBytes(Uint8List bytes) =>
     parseImportFileBytes(bytes);
 
-List<ExcelParsedRow> _parseXlsx(Uint8List bytes) {
+ImportParseResult _parseXlsxFile(Uint8List bytes) {
   try {
     final book = Excel.decodeBytes(bytes);
     if (book.tables.isEmpty) {
@@ -87,32 +80,42 @@ List<ExcelParsedRow> _parseXlsx(Uint8List bytes) {
       name: _logName,
     );
     if (tableRows.isEmpty) {
-      return const [];
+      return const ImportParseResult(
+        rawHeaders: [],
+        headerMatch: CsvHeaderMatchReport.empty,
+        rows: [],
+      );
     }
 
-    final headerCells = tableRows.first;
     final headers = <String>[];
-    for (final cell in headerCells) {
+    for (final cell in tableRows.first) {
       headers.add(ExcelImportColumns.normalizeHeader(_xlsxCellText(cell)));
     }
+    final headerMatch = CsvHeaderMapper.analyze(headers);
 
     final out = <ExcelParsedRow>[];
     for (var r = 1; r < tableRows.length; r++) {
       final row = tableRows[r];
       if (_isEmptyXlsxRow(row)) continue;
-
-      final values = <String, String>{};
+      final cells = <String>[];
       for (var c = 0; c < headers.length; c++) {
-        final key = headers[c];
-        if (key.isEmpty) continue;
         final cell = c < row.length ? row[c] : null;
-        values[key] = _xlsxCellText(cell);
+        cells.add(_xlsxCellText(cell));
       }
+      final values = CsvHeaderMapper.remapValues(
+        rawHeaders: headers,
+        cells: cells,
+        report: headerMatch,
+      );
       if (_rowHasAnyData(values)) {
         out.add(ExcelParsedRow(rowIndex: r + 1, values: values));
       }
     }
-    return out;
+    return ImportParseResult(
+      rawHeaders: headers,
+      headerMatch: headerMatch,
+      rows: out,
+    );
   } catch (e, st) {
     log('xlsx parse failed: $e\n$st', name: _logName);
     rethrow;
@@ -163,8 +166,3 @@ bool _rowHasAnyData(Map<String, String> values) {
   return false;
 }
 
-bool _headersContain(List<String> headers, String required) {
-  final normalized =
-      headers.map(ExcelImportColumns.normalizeHeader).toSet();
-  return normalized.contains(required);
-}

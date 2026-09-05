@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:developer' show log;
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/import_sync/import_models.dart';
 import 'package:injast_admin/server_config.dart';
 
@@ -156,5 +156,17 @@ class ImportSyncApi {
       );
     }
     return result;
+  }
+
+  Future<void> markParvandeImport(String codeCo) async {
+    final code = codeCo.trim();
+    if (code.isEmpty) return;
+    try {
+      await http.post(
+        Uri.parse(getApiUrl('insert/import/mark-updated')),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'code_co': code}),
+      );
+    } catch (_) {}
   }
 }

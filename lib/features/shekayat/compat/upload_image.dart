@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:injast_admin/server_config.dart';
 
@@ -28,7 +28,7 @@ Future<String?> uploadImageToServer(
     request.fields['path'] = path;
     request.fields['filename'] = filename;
 
-    final streamedResponse = await request.send().timeout(
+    final streamedResponse = await http.send(request).timeout(
       const Duration(seconds: 60),
       onTimeout: () => throw TimeoutException('زمان اتصال به سرور به پایان رسید.'),
     );
@@ -75,7 +75,7 @@ Future<String?> uploadFileToServer(
     request.fields['path'] = path;
     request.fields['filename'] = filename;
 
-    final streamedResponse = await request.send().timeout(
+    final streamedResponse = await http.send(request).timeout(
       const Duration(seconds: 60),
       onTimeout: () => throw TimeoutException('زمان اتصال به سرور به پایان رسید.'),
     );

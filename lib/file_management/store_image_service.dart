@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:injast_admin/file_management/store_image_logger.dart';
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/file_management/media_file_urls.dart';
 import 'package:injast_admin/local_cache/local_cache_paths.dart';
 import 'package:injast_admin/local_cache/local_image_store.dart';
@@ -82,7 +82,7 @@ class StoreImageService {
       ..fields['filename'] = serverFilename(codeCo, idParvandeh, index)
       ..files.add(await http.MultipartFile.fromPath('image', localPath));
 
-    final streamed = await request.send().timeout(const Duration(seconds: 90));
+    final streamed = await http.send(request).timeout(const Duration(seconds: 90));
     final res = await http.Response.fromStream(streamed);
     logStoreImage('upload status=${res.statusCode} body=${res.body}');
 

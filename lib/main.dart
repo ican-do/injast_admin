@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:injast_admin/api_token.dart';
 import 'package:injast_admin/asnaf_site_page.dart';
 import 'package:injast_admin/features/benefits/manage_benefits_page.dart';
 import 'package:injast_admin/features/calendar/my_calendar_page.dart';
@@ -57,6 +58,7 @@ void main() {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
     await _initLocalDatabase();
+    await ApiToken.load();
     runApp(const InjastAdminApp());
   }, (error, stack) {
     debugPrint('main zone error: $error\n$stack');
@@ -998,6 +1000,16 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
           );
   }
 
+  String _lastImportPill(dynamic raw) {
+    final s = raw?.toString().trim() ?? '';
+    if (s.isEmpty || s == 'null') return 'بروزرسانی: ثبت نشده';
+    final dt = DateTime.tryParse(s.replaceFirst(' ', 'T'));
+    if (dt == null) return 'بروزرسانی: ثبت نشده';
+    final j = Gregorian(dt.year, dt.month, dt.day).toJalali();
+    final f = j.formatter;
+    return 'بروزرسانی: انجام شد ${f.yyyy}/${f.mm}/${f.dd}';
+  }
+
   String _faDate(DateTime dt) {
     final j = Gregorian(dt.year, dt.month, dt.day).toJalali();
     final f = j.formatter;
@@ -1181,6 +1193,10 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
                         _infoPill(Icons.qr_code_2_outlined, _u('code_co')),
                         if (_co('tel1_co') != '—')
                           _infoPill(Icons.call_outlined, _co('tel1_co')),
+                        _infoPill(
+                          Icons.update_outlined,
+                          _lastImportPill(widget.memberStats?['last_parvande_import']),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 6),

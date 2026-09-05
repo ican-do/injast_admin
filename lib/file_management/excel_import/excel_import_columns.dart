@@ -28,6 +28,13 @@ class ExcelImportColumns {
   static const ownership = 'نوع مالکیت';
   static const birthDate = 'تاریخ تولد';
   static const religion = 'مذهب';
+  static const expiryDate = 'تاریخ انقضا';
+  static const mobile = 'موبایل';
+  static const phone = 'تلفن';
+  static const lat = 'عرض جغرافیایی';
+  static const lng = 'طول جغرافیایی';
+  static const district = 'منطقه';
+  static const area = 'مساحت';
 
   /// حداقل ستون‌های لازم برای ثبت پرونده در سیستم.
   static const requiredForRegistration = [
@@ -70,6 +77,13 @@ class ExcelImportColumns {
     ownership,
     birthDate,
     religion,
+    expiryDate,
+    mobile,
+    phone,
+    lat,
+    lng,
+    district,
+    area,
   ];
 
   static String normalizeHeader(String raw) {

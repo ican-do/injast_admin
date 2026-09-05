@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/server_config.dart';
 
 String mediaAbsoluteUrl(String? path) {
@@ -8,16 +8,15 @@ String mediaAbsoluteUrl(String? path) {
   if (path.startsWith('http://') || path.startsWith('https://')) {
     final uri = Uri.tryParse(path);
     if (uri != null && uri.path.startsWith('/pic_injast/')) {
-      return '$kDefaultApiProtocol://$kDefaultApiIp:$kDefaultApiPort${uri.path}';
+      return '$mediaOrigin${uri.path}';
     }
     return path;
   }
   final clean = path.startsWith('/') ? path : '/$path';
-  // تصاویر از API (با CORS) سرو می‌شوند تا پیش‌نمایش/وب یکسان باشد
   if (clean.startsWith('/pic_injast/')) {
-    return '$kDefaultApiProtocol://$kDefaultApiIp:$kDefaultApiPort$clean';
+    return '$mediaOrigin$clean';
   }
-  return '$kDefaultApiProtocol://$kDefaultApiIp$clean';
+  return '$mediaOrigin$clean';
 }
 
 class PortalSettings {

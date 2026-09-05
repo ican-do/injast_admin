@@ -7,8 +7,8 @@ String getStaticFileUrl(String filePath) {
     return filePath;
   }
   final path = filePath.startsWith('/') ? filePath : '/$filePath';
-  return 'http://$kDefaultApiIp$path';
+  return '$mediaOrigin$path';
 }
 
 String getShekayatInviteUrl(String codeCo) =>
-    'http://$kDefaultApiIp/#/Complaint/$codeCo';
+    '$publicWebOrigin/#/Complaint/$codeCo';

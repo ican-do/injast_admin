@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 
 import 'package:injast_admin/features/benefits/mazaya.dart';
 import 'package:injast_admin/server_config.dart';

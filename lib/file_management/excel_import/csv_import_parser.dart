@@ -2,44 +2,54 @@ import 'dart:convert';
 import 'dart:developer' show log;
 import 'dart:typed_data';
 
+import 'package:injast_admin/file_management/excel_import/csv_header_mapper.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_columns.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_models.dart';
 
 const _logName = 'excel_import';
 
-List<ExcelParsedRow> parseCsvBytes(Uint8List bytes) {
+ImportParseResult parseCsvFile(Uint8List bytes) {
   final text = _decodeCsvText(bytes);
-  final records = _parseCsvRecords(text);
+  final records = _parseCsvRecords(text, _detectCsvDelimiter(text));
   if (records.isEmpty) {
     log('csv parse: empty file', name: _logName);
-    return const [];
+    return const ImportParseResult(
+      rawHeaders: [],
+      headerMatch: CsvHeaderMatchReport.empty,
+      rows: [],
+    );
   }
 
-  final headerRow = records.first;
-  final headers = headerRow.map(ExcelImportColumns.normalizeHeader).toList();
-  log('csv header columns=${headers.length}', name: _logName);
+  final headers = records.first.map(ExcelImportColumns.normalizeHeader).toList();
+  final headerMatch = CsvHeaderMapper.analyze(headers);
+  log(
+    'csv headers=${headers.length} mapped=${headerMatch.bindings.length} '
+    'match=${headerMatch.matchPercent}%',
+    name: _logName,
+  );
 
   final out = <ExcelParsedRow>[];
   for (var i = 1; i < records.length; i++) {
     final cells = records[i];
     if (_isEmptyCsvRow(cells)) continue;
-
-    final values = <String, String>{};
-    for (var c = 0; c < headers.length; c++) {
-      final key = headers[c];
-      if (key.isEmpty) continue;
-      values[key] = c < cells.length ? cells[c].trim() : '';
-    }
+    final values = CsvHeaderMapper.remapValues(
+      rawHeaders: headers,
+      cells: cells,
+      report: headerMatch,
+    );
     if (!_rowHasAnyData(values)) continue;
     out.add(ExcelParsedRow(rowIndex: i + 1, values: values));
   }
 
-  final withShenase = out
-      .where((r) => (r.values[ExcelImportColumns.shenase] ?? '').trim().isNotEmpty)
-      .length;
-  log('csv data rows=${out.length} withShenase=$withShenase', name: _logName);
-  return out;
+  log('csv data rows=${out.length}', name: _logName);
+  return ImportParseResult(
+    rawHeaders: headers,
+    headerMatch: headerMatch,
+    rows: out,
+  );
 }
+
+List<ExcelParsedRow> parseCsvBytes(Uint8List bytes) => parseCsvFile(bytes).rows;
 
 String _decodeCsvText(Uint8List bytes) {
   if (bytes.isEmpty) return '';
@@ -53,7 +63,17 @@ String _decodeCsvText(Uint8List bytes) {
   return utf8.decode(bytes.sublist(start), allowMalformed: true);
 }
 
-List<List<String>> _parseCsvRecords(String input) {
+String _detectCsvDelimiter(String text) {
+  final line = text.split(RegExp(r'\r?\n')).firstWhere(
+        (l) => l.trim().isNotEmpty,
+        orElse: () => '',
+      );
+  final commas = RegExp(',').allMatches(line).length;
+  final semis = RegExp(';').allMatches(line).length;
+  return semis > commas ? ';' : ',';
+}
+
+List<List<String>> _parseCsvRecords(String input, String delimiter) {
   final rows = <List<String>>[];
   final row = <String>[];
   final cell = StringBuffer();
@@ -83,6 +103,12 @@ List<List<String>> _parseCsvRecords(String input) {
         inQuotes = true;
         i++;
       case ',':
+      case ';':
+        if (ch != delimiter) {
+          cell.write(ch);
+          i++;
+          break;
+        }
         row.add(cell.toString());
         cell.clear();
         i++;

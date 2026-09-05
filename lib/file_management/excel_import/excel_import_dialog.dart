@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:injast_admin/file_management/excel_import/csv_header_mapper.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_parser.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_service.dart';
 
@@ -43,6 +44,7 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
 
   bool get _canStart =>
       _phase == _Phase.ready &&
+      (_analysis?.headerMatch.canProceed ?? false) &&
       (_analysis?.isHealthy ?? false) &&
       (_analysis?.importableCount ?? 0) > 0;
 
@@ -59,7 +61,7 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
     return AlertDialog(
       title: const Text('بارگذاری پرونده از CSV'),
       content: SizedBox(
-        width: 520,
+        width: 560,
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -90,13 +92,16 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
               ],
               if (analysis != null) ...[
                 const SizedBox(height: 14),
+                _headerMatchPanel(analysis.headerMatch),
+                const SizedBox(height: 12),
                 _infoTile('فرمت شناسایی‌شده', _formatLabel(analysis.fileFormat)),
                 _infoTile('تعداد پرونده در فایل', '${analysis.totalRows}'),
-                _infoTile('تعداد ستون‌ها', '${analysis.columnCount}'),
-                _infoTile(
-                  'قابل پردازش (پس از حذف تکراری)',
-                  '${analysis.importableCount}',
-                ),
+                _infoTile('تعداد ستون‌های فایل', '${analysis.columnCount}'),
+                if (analysis.headerMatch.canProceed)
+                  _infoTile(
+                    'قابل پردازش (پس از حذف تکراری)',
+                    '${analysis.importableCount}',
+                  ),
                 if (analysis.insertOnServerCount > 0)
                   _infoTile(
                     'ثبت جدید روی سرور',
@@ -222,6 +227,70 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
     );
   }
 
+  Widget _headerMatchPanel(CsvHeaderMatchReport match) {
+    final color = match.canProceed ? Colors.teal : Colors.orange;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.account_tree_outlined, color: color.shade800, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'انطباق هدر با جدول پرونده: ${match.matchPercent}٪',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: color.shade900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(match.summary, style: const TextStyle(height: 1.5, fontSize: 13)),
+          if (match.bindings.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const Text(
+              'جایگاه ستون‌ها در این فایل',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
+            ),
+            const SizedBox(height: 6),
+            ...match.bindings.take(14).map(
+                  (b) => Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      'ستون ${b.columnIndex + 1}: «${b.rawHeader}» → ${b.field.labelFa} (${b.field.dbField})',
+                      style: const TextStyle(fontSize: 12, height: 1.4),
+                    ),
+                  ),
+                ),
+            if (match.bindings.length > 14)
+              Text(
+                'و ${match.bindings.length - 14} ستون دیگر…',
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+          ],
+          if (match.unmappedHeaders.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'نادیده: ${match.unmappedHeaders.take(6).join('، ')}'
+              '${match.unmappedHeaders.length > 6 ? '…' : ''}',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _infoTile(String label, String value, {Color? color}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -314,13 +383,14 @@ class _ExcelImportDialogState extends State<_ExcelImportDialog> {
       _fileName = file.name;
       _fileBytes = bytes;
 
-      setState(() => _statusMessage = 'در حال تحلیل ساختار و تکراری‌ها...');
+      setState(() => _statusMessage = 'در حال آنالیز هدر و تطبیق ستون‌ها...');
 
-      final rows = await _service.parseFileBytes(bytes, fileName: file.name);
+      final parsed = await _service.parseFile(bytes, fileName: file.name);
       final analysis = await _service.analyze(
         fileName: file.name,
         fileBytes: bytes,
-        rows: rows,
+        rows: parsed.rows,
+        headerMatch: parsed.headerMatch,
         onProgress: (msg) {
           if (mounted) setState(() => _statusMessage = msg);
         },

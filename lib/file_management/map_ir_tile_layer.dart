@@ -6,63 +6,45 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:injast_admin/file_management/map_ir_config.dart';
 
-/// لایهٔ تایل raster رسمی map.ir.
+const String _osmTileUrlTemplate =
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+/// لایهٔ تایل — OSM رایگان (کلید Map.ir و Carto منقضی/پولی شده‌اند).
 class MapIrTileLayer extends StatelessWidget {
   const MapIrTileLayer({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return TileLayer(
-      urlTemplate: MapIrConfig.tileUrlTemplate,
-      maxZoom: 20,
-      userAgentPackageName: 'com.example.injast_admin',
-      tileProvider: _ValidatedNetworkTileProvider(
-        headers: MapIrConfig.tileHeaders,
-        fallbackUrlsForTile: _fallbackOsmUrls,
-      ),
-    );
-  }
+  Widget build(BuildContext context) => const _OsmTileLayer();
 }
 
-/// لایهٔ OSM با provider سفارشی و لاگ برای عیب‌یابی صفحهٔ بازرسی.
+/// لایهٔ OSM برای عیب‌یابی صفحهٔ بازرسی.
 class DiagnosticOsmTileLayer extends StatelessWidget {
   const DiagnosticOsmTileLayer({super.key});
 
-  static const _inspectionUrlTemplate =
-      'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png';
-
   @override
-  Widget build(BuildContext context) {
-    return TileLayer(
-      urlTemplate: _inspectionUrlTemplate,
-      maxZoom: 20,
-      userAgentPackageName: 'com.example.injast_admin',
-      tileProvider: _ValidatedNetworkTileProvider(
-        headers: _defaultTileHeaders(),
-        fallbackUrlsForTile: _inspectionTileFallbackUrls,
-      ),
-    );
-  }
+  Widget build(BuildContext context) => const _OsmTileLayer();
 }
 
-/// همان منبع نقشه‌ای که در پروژهٔ قدیمیِ بازرسی استفاده می‌شد.
+/// لایهٔ نقشهٔ بازرسی / پرونده.
 class LegacyBazrasiTileLayer extends StatelessWidget {
   const LegacyBazrasiTileLayer({super.key});
 
-  static const _legacyBazrasiTileUrlTemplate =
-      'https://memaps.ir/hot/{z}/{x}/{y}.png';
+  @override
+  Widget build(BuildContext context) => const _OsmTileLayer();
+}
+
+class _OsmTileLayer extends StatelessWidget {
+  const _OsmTileLayer();
 
   @override
   Widget build(BuildContext context) {
     return TileLayer(
-      urlTemplate: _legacyBazrasiTileUrlTemplate,
-      additionalOptions: {
-        'apikey': MapIrConfig.apiKey,
-      },
-      userAgentPackageName: 'com.example.injast_admin',
+      urlTemplate: _osmTileUrlTemplate,
+      maxZoom: 19,
+      userAgentPackageName: 'ir.injast.admin',
       tileProvider: _ValidatedNetworkTileProvider(
         headers: _defaultTileHeaders(),
-        fallbackUrlsForTile: _inspectionTileFallbackUrls,
+        fallbackUrlsForTile: _fallbackOsmUrls,
       ),
     );
   }
@@ -195,6 +177,9 @@ class _ValidatedMapImageProvider
       final fetched = await httpClient
           .readBytes(Uri.parse(url), headers: headers)
           .timeout(MapIrConfig.geocodeTimeout);
+      if (_looksLikeKeyRequiredTile(fetched)) {
+        throw StateError('tile vendor requires api key');
+      }
       final codec = await _tryDecodeBytes(fetched, decode);
       if (codec != null) {
         return codec;
@@ -211,6 +196,9 @@ class _ValidatedMapImageProvider
             Uri.parse(resolvedFallbackUrl),
             headers: _defaultTileHeaders(),
           ).timeout(MapIrConfig.geocodeTimeout);
+          if (_looksLikeKeyRequiredTile(fetched)) {
+            continue;
+          }
           final codec = await _tryDecodeBytes(fetched, decode);
           if (codec != null) {
             return codec;
@@ -246,9 +234,20 @@ class _ValidatedMapImageProvider
 }
 
 Map<String, String> _defaultTileHeaders() => {
-      'User-Agent': MapIrConfig.userAgent,
+      'User-Agent': 'InjastAdmin/1.0 (desktop; http://injast-web.ir)',
       'Accept': 'image/png,image/jpeg,image/webp,image/*,*/*',
     };
+
+/// Carto و بعضی CDNها به‌جای ۴۰۳ یک PNG با متن «API KEY REQUIRED» می‌دهند.
+bool _looksLikeKeyRequiredTile(Uint8List bytes) {
+  if (bytes.isEmpty) return true;
+  final sample = bytes.length > 800 ? bytes.sublist(0, 800) : bytes;
+  final text = String.fromCharCodes(
+    sample.where((b) => b >= 0x20 && b <= 0x7E),
+  ).toLowerCase();
+  return text.contains('api key required') ||
+      text.contains('apikey') && text.contains('carto');
+}
 
 ({String z, String x, String y})? _extractTileCoordinates(String originalUrl) {
   final uri = Uri.tryParse(originalUrl);
@@ -280,24 +279,9 @@ List<String> _fallbackOsmUrls(String originalUrl) {
   final x = coords.x;
   final y = coords.y;
   return [
-    'https://tile.openstreetmap.org/$z/$x/$y.png',
     'https://tile.openstreetmap.de/$z/$x/$y.png',
     'https://a.tile.openstreetmap.fr/hot/$z/$x/$y.png',
-  ];
-}
-
-List<String> _inspectionTileFallbackUrls(String originalUrl) {
-  final coords = _extractTileCoordinates(originalUrl);
-  if (coords == null) {
-    return const [];
-  }
-  final z = coords.z;
-  final x = coords.x;
-  final y = coords.y;
-  return [
-    'https://b.basemaps.cartocdn.com/light_all/$z/$x/$y.png',
-    'https://tile.openstreetmap.de/$z/$x/$y.png',
-    'https://a.tile.openstreetmap.fr/hot/$z/$x/$y.png',
-    'https://tile.openstreetmap.org/$z/$x/$y.png',
+    'https://b.tile.openstreetmap.fr/hot/$z/$x/$y.png',
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/$z/$y/$x',
   ];
 }

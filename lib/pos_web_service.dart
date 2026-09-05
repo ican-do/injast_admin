@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/api_token.dart';
 import 'package:injast_admin/import_sync/asnaf_recovery_store.dart';
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/local_cache/offline_session_store.dart';
 import 'package:injast_admin/server_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -74,20 +75,33 @@ class PosWebService {
       if (body['status'] != 'success') return;
       if (body['active'] != true) return;
 
-      final userUri =
-          Uri.parse(getApiUrl('select/select_user/${Uri.encodeComponent(uuid)}'));
-      final userRes = await http.get(userUri);
-      if (userRes.statusCode != 200) return;
-      final list = jsonDecode(userRes.body);
-      if (list is! List || list.isEmpty) return;
+      await _issueSessionToken();
 
-      final row = list.first;
-      final wasLoggedIn = _sessionUser != null;
-      if (row is Map<String, dynamic>) {
-        _sessionUser = row;
-      } else if (row is Map) {
-        _sessionUser = Map<String, dynamic>.from(row);
+      Map<String, dynamic>? row;
+      final fromCheck = body['user'];
+      if (fromCheck is Map<String, dynamic>) {
+        row = fromCheck;
+      } else if (fromCheck is Map) {
+        row = Map<String, dynamic>.from(fromCheck);
       }
+      if (row == null) {
+        final userUri =
+            Uri.parse(getApiUrl('select/select_user/${Uri.encodeComponent(uuid)}'));
+        final userRes = await http.get(userUri);
+        if (userRes.statusCode != 200) return;
+        final list = jsonDecode(userRes.body);
+        if (list is! List || list.isEmpty) return;
+        final first = list.first;
+        if (first is Map<String, dynamic>) {
+          row = first;
+        } else if (first is Map) {
+          row = Map<String, dynamic>.from(first);
+        }
+      }
+      if (row == null) return;
+
+      final wasLoggedIn = _sessionUser != null;
+      _sessionUser = row;
 
       // پس از ورود موفق با QR، توکن قدیمی اصناف پاک می‌شود تا IP/سشن قبلی دوباره استفاده نشود.
       if (!wasLoggedIn && _sessionUser != null) {
@@ -149,6 +163,7 @@ class PosWebService {
           'total_members': total,
           'active_members': active,
           'inactive_members': inactive,
+          'last_parvande_import': body['last_parvande_import'],
         };
       }
     } catch (_) {}
@@ -159,13 +174,16 @@ class PosWebService {
     final uuid = _deviceUuid;
     if (uuid != null && uuid.isNotEmpty) {
       try {
-        await http.post(
-          Uri.parse(getApiUrl('pos/unbind-by-device')),
-          headers: {'Content-Type': 'application/json; charset=utf-8'},
-          body: jsonEncode({'mac_id': uuid}),
-        );
+        await http
+            .post(
+              Uri.parse(getApiUrl('pos/unbind-by-device')),
+              headers: {'Content-Type': 'application/json; charset=utf-8'},
+              body: jsonEncode({'mac_id': uuid}),
+            )
+            .timeout(const Duration(seconds: 8));
       } catch (_) {}
     }
+    await ApiToken.clear();
     _sessionUser = null;
     _unionInfo = null;
     _memberStats = null;
@@ -177,6 +195,28 @@ class PosWebService {
     final next = _uuid.v4();
     await p.setString(_kDeviceUuid, next);
     _deviceUuid = next;
+  }
+
+  Future<void> _issueSessionToken() async {
+    final uuid = _deviceUuid;
+    if (uuid == null || uuid.isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse(getApiUrl('pos/session')),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+        body: jsonEncode({'mac_id': uuid}),
+      );
+      if (res.statusCode != 200) return;
+      final body = jsonDecode(res.body);
+      if (body is! Map) return;
+      final token = body['token']?.toString() ?? '';
+      if (token.isEmpty) return;
+      final expRaw = body['expires_at'];
+      final expiresAt = expRaw is int
+          ? expRaw
+          : int.tryParse(expRaw?.toString() ?? '') ?? 0;
+      await ApiToken.save(token, expiresAt: expiresAt);
+    } catch (_) {}
   }
 
   void clearSessionUserOnly() {

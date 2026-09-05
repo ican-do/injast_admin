@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/file_management/hagh_ozviat_member_index.dart';
 import 'package:injast_admin/file_management/hagh_ozviat_models.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_shenase.dart';
@@ -167,25 +167,32 @@ class HaghOzviatApi {
     var rowsInserted = 0;
     final errors = <String>[];
     final totalMembers = memberEntries.length;
+    const membersPerRequest = 40;
 
-    for (var i = 0; i < totalMembers; i++) {
-      final entry = memberEntries[i];
-      final chunk = entry.value;
+    for (var i = 0; i < totalMembers; i += membersPerRequest) {
+      final slice = memberEntries.skip(i).take(membersPerRequest).toList();
+      final records = <HaghOzviatRow>[
+        for (final e in slice) ...e.value,
+      ];
+      final done = (i + slice.length).clamp(1, totalMembers);
       onProgress?.call(
         HaghOzviatSyncProgress(
-          message: 'عضو ${i + 1} از $totalMembers (کد ${entry.key})…',
-          current: i + 1,
+          message: 'اعضا $done از $totalMembers…',
+          current: done,
           total: totalMembers,
         ),
       );
 
       try {
-        final part = await _postSyncBatch(codeCo: codeCo, records: chunk);
+        final part = await _postSyncBatch(
+          codeCo: codeCo,
+          records: records,
+        );
         membersReplaced += part.membersReplaced;
         rowsInserted += part.rowsInserted;
         errors.addAll(part.errors);
       } catch (e) {
-        errors.add('عضو ${entry.key}: ${_friendlyError(e)}');
+        errors.add('دسته از عضو ${slice.first.key}: ${_friendlyError(e)}');
       }
     }
 
@@ -206,16 +213,35 @@ class HaghOzviatApi {
       'records': records.map((e) => e.toSyncJson()).toList(),
     });
 
-    final res = await http
-        .post(
-          uri,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': utf8.encode(body).length.toString(),
-          },
-          body: body,
-        )
-        .timeout(const Duration(minutes: 2));
+    http.Response? res;
+    Object? lastError;
+    for (var attempt = 0; attempt < 6; attempt++) {
+      try {
+        res = await http
+            .post(
+              uri,
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': utf8.encode(body).length.toString(),
+              },
+              body: body,
+            )
+            .timeout(const Duration(minutes: 2));
+        if (res.statusCode != 429 &&
+            !res.body.contains('تعداد درخواست‌ها بیش از حد مجاز است')) {
+          break;
+        }
+        lastError = Exception(_parseHttpError(res.statusCode, res.body));
+      } catch (e) {
+        lastError = e;
+        final s = e.toString();
+        if (!s.contains('429') && !s.contains('حد مجاز')) rethrow;
+      }
+      await Future<void>.delayed(Duration(seconds: 2 + attempt * 2));
+    }
+    if (res == null) {
+      throw lastError ?? Exception('خطا در همگام‌سازی حق عضویت');
+    }
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception(_parseHttpError(res.statusCode, res.body));

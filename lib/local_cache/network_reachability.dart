@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:http/http.dart' as http;
+import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/server_config.dart';
 
 /// بررسی دسترسی به سرور اتحادیه (برای فعال‌سازی خودکار حالت آفلاین).
@@ -8,7 +8,7 @@ class NetworkReachability {
   NetworkReachability._();
   static final NetworkReachability instance = NetworkReachability._();
 
-  static const _pingPath = 'insert/parvaneh_meta_ping';
+  static const _pingPath = 'health';
   static const _defaultTimeout = Duration(seconds: 4);
 
   bool? _lastResult;

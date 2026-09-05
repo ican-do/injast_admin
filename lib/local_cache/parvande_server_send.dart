@@ -207,6 +207,9 @@ class ParvandeServerSend {
         records.where((r) => sentSet.contains(r.clientTempId)),
       );
     }
+    if (fin.inserted > 0 || sentIds.isNotEmpty) {
+      await _syncApi.markParvandeImport(codeCo);
+    }
 
     onProgress?.call(
       ParvandeServerSendProgress(

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' show log;
 
 import 'package:flutter/foundation.dart';
+import 'package:injast_admin/file_management/excel_import/csv_header_mapper.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_columns.dart';
 import 'package:injast_admin/file_management/excel_import/excel_import_models.dart';
 import 'package:injast_admin/file_management/excel_import/csv_import_dedupe.dart';
@@ -17,6 +18,7 @@ import 'package:injast_admin/file_management/parvande_api.dart';
 import 'package:injast_admin/file_management/parvande_vaziyat.dart';
 import 'package:injast_admin/file_management/address_geocoding_service.dart';
 import 'package:injast_admin/import_sync/import_models.dart';
+import 'package:injast_admin/import_sync/import_sync_api.dart';
 import 'package:injast_admin/local_cache/parvande_server_send.dart';
 const _logName = 'excel_import';
 const _testLogName = 'csv_import_test';
@@ -48,6 +50,7 @@ class ExcelImportAnalysis {
     required this.insertableRows,
     required this.updatableRows,
     required this.serverByShenase,
+    required this.headerMatch,
   });
 
   final String fileName;
@@ -70,6 +73,7 @@ class ExcelImportAnalysis {
   final List<ExcelParsedRow> insertableRows;
   final List<ExcelParsedRow> updatableRows;
   final Map<String, Map<String, dynamic>> serverByShenase;
+  final CsvHeaderMatchReport headerMatch;
 
   Set<String> get serverShenaseSet => serverByShenase.keys.toSet();
 
@@ -119,11 +123,17 @@ class ExcelImportService {
   final _parvandeApi = ParvandeApi.instance;
   final _geocoder = AddressGeocodingService.instance;
 
-  Future<List<ExcelParsedRow>> parseFileBytes(
+  Future<ImportParseResult> parseFile(
     Uint8List bytes, {
     String? fileName,
   }) =>
-      xls_parser.parseImportFileBytes(bytes, fileName: fileName);
+      xls_parser.parseImportFile(bytes, fileName: fileName);
+
+  Future<List<ExcelParsedRow>> parseFileBytes(
+    Uint8List bytes, {
+    String? fileName,
+  }) async =>
+      (await parseFile(bytes, fileName: fileName)).rows;
 
   @Deprecated('Use parseFileBytes')
   Future<List<ExcelParsedRow>> parseWorkbookBytes(Uint8List bytes) =>
@@ -133,50 +143,62 @@ class ExcelImportService {
     required String fileName,
     required Uint8List fileBytes,
     required List<ExcelParsedRow> rows,
+    CsvHeaderMatchReport headerMatch = CsvHeaderMatchReport.empty,
     void Function(String message)? onProgress,
   }) async {
     final fileFormat = xls_parser.detectImportFormat(fileBytes, fileName: fileName);
-    onProgress?.call('در حال خواندن ساختار فایل...');
-    if (rows.isEmpty) {
+    onProgress?.call('در حال آنالیز هدر فایل...');
+    final missingRequired = headerMatch.missingSensitive;
+    final unknownColumns = headerMatch.unmappedHeaders;
+    final rawHeaders = headerMatch.rawHeaders;
+
+    ExcelImportAnalysis empty({
+      required String healthMessage,
+      List<String> sampleIssues = const [],
+    }) {
       return ExcelImportAnalysis(
         fileName: fileName,
         fileFormat: fileFormat,
-        totalRows: 0,
-        columnCount: 0,
-        headers: const [],
-        missingRequiredColumns: List.from(ExcelImportColumns.requiredForRegistration),
-        unknownColumns: const [],
+        totalRows: rows.length,
+        columnCount: rawHeaders.length,
+        headers: rawHeaders,
+        missingRequiredColumns: missingRequired,
+        unknownColumns: unknownColumns,
         isHealthy: false,
-        healthMessage: 'هیچ ردیف داده‌ای در فایل یافت نشد.',
+        healthMessage: healthMessage,
         duplicateInFileCount: 0,
         insertOnServerCount: 0,
         updateOnServerCount: 0,
         importableCount: 0,
-        sampleIssues: const ['فایل فاقد ردیف داده است.'],
-        rows: const [],
+        sampleIssues: sampleIssues,
+        rows: rows,
         importableRows: const [],
         insertableRows: const [],
         updatableRows: const [],
         serverByShenase: const {},
+        headerMatch: headerMatch,
       );
     }
 
-    final headers = rows.first.values.keys.toList();
-    final normalizedHeaders = headers.map(ExcelImportColumns.normalizeHeader).toSet();
-    final missingRequired = ExcelImportColumns.requiredForRegistration
-        .where((col) => !normalizedHeaders.contains(col))
-        .toList();
+    if (!headerMatch.canProceed) {
+      return empty(
+        healthMessage: headerMatch.summary,
+        sampleIssues: missingRequired.isEmpty
+            ? const ['ستون‌های کافی برای ادامه شناسایی نشد.']
+            : ['ستون حساس نیست: ${missingRequired.join('، ')}'],
+      );
+    }
 
-    final unknownColumns = headers
-        .where((h) {
-          if (h.isEmpty) return false;
-          return ExcelImportColumns.canonicalColumn(h) == null;
-        })
-        .toList();
+    if (rows.isEmpty) {
+      return empty(
+        healthMessage: '${headerMatch.summary} اما ردیف داده‌ای در فایل نیست.',
+        sampleIssues: const ['فایل فاقد ردیف داده است.'],
+      );
+    }
 
     log(
       'analyze | format=$fileFormat | rows=${rows.length} | '
-      'missing=$missingRequired | unknown=${unknownColumns.length}',
+      'match=${headerMatch.matchPercent}% | missingSensitive=$missingRequired',
       name: _logName,
     );
 
@@ -239,7 +261,7 @@ class ExcelImportService {
       'insert=${insertable.length} | update=${updatable.length} | '
       'issues=${issues.length} | missingCols=$missingRequired',
     );
-    _updLog('ANALYZE headers: ${headers.take(20).join(' | ')}');
+    _updLog('ANALYZE headers: ${rawHeaders.take(20).join(' | ')}');
     for (final row in updatable.take(8)) {
       final s = _shenaseFromRow(row);
       final server = serverByShenase[s];
@@ -269,8 +291,8 @@ class ExcelImportService {
       fileName: fileName,
       fileFormat: fileFormat,
       totalRows: rows.length,
-      columnCount: headers.length,
-      headers: headers,
+      columnCount: rawHeaders.length,
+      headers: rawHeaders,
       missingRequiredColumns: missingRequired,
       unknownColumns: unknownColumns,
       isHealthy: isHealthy,
@@ -285,6 +307,7 @@ class ExcelImportService {
       insertableRows: insertable,
       updatableRows: updatable,
       serverByShenase: serverByShenase,
+      headerMatch: headerMatch,
     );
   }
 
@@ -441,7 +464,9 @@ class ExcelImportService {
       }
       final v = row.values;
       final address = payload['address_store']?.trim() ?? '';
-      if (address.isNotEmpty) {
+      final hasCoords = (payload['lat_store'] ?? '').trim().isNotEmpty &&
+          (payload['long_store'] ?? '').trim().isNotEmpty;
+      if (address.isNotEmpty && !hasCoords) {
         onProgress?.call(
           ExcelImportRunProgress(
             message:
@@ -537,6 +562,10 @@ class ExcelImportService {
         name: _testLogName,
       );
       await _logServerPresenceAfterSend(toInsert);
+    }
+
+    if (!stoppedEarly && (updatedCount > 0 || finalize.inserted > 0)) {
+      await ImportSyncApi.instance.markParvandeImport(codeCo);
     }
 
     return ExcelImportRunResult(
@@ -664,10 +693,13 @@ class ExcelImportService {
     final issueGregorian = _jalaliCellToServer(v[ExcelImportColumns.issueDate]);
     final birthGregorian = _jalaliCellToServer(v[ExcelImportColumns.birthDate]);
     final csvValidity = _cell(v, ExcelImportColumns.validity);
-    final dateExp = CsvParvandeDates.computeExpServer(
-      csvValidity: csvValidity,
-      issueDateServer: issueGregorian,
-    );
+    final expiryFromFile = _jalaliCellToServer(v[ExcelImportColumns.expiryDate]);
+    final dateExp = expiryFromFile.isNotEmpty
+        ? expiryFromFile
+        : CsvParvandeDates.computeExpServer(
+            csvValidity: csvValidity,
+            issueDateServer: issueGregorian,
+          );
     final city = _cell(v, ExcelImportColumns.city);
     // سرور insert.js مقدار id_parvandeh را با parseInt می‌خواند — فقط رقم مجاز است.
     final idParvandeh = _numericIdParvandehFromShenase(shenase);
@@ -685,8 +717,8 @@ class ExcelImportService {
       'name_pedar_admin': _cell(v, ExcelImportColumns.fatherName),
       'num_shenasname_admin': '',
       'code_meli_admin': _cell(v, ExcelImportColumns.nationalId),
-      'mob_admin': '',
-      'tel_admin': '',
+      'mob_admin': _cell(v, ExcelImportColumns.mobile),
+      'tel_admin': _cell(v, ExcelImportColumns.phone),
       'madrak_admin':
           CsvImportLabels.normalizeEducation(_cell(v, ExcelImportColumns.education)),
       'din_admin': CsvImportLabels.normalizeReligion(_cell(v, ExcelImportColumns.religion)),
@@ -698,14 +730,14 @@ class ExcelImportService {
               .trim(),
       'shenase_store': _shenaseFromRow(row),
       'raste_store': _cell(v, ExcelImportColumns.raste),
-      'masahat_store': '',
+      'masahat_store': _cell(v, ExcelImportColumns.area),
       'type_melki_store':
           CsvImportLabels.normalizeOwnership(_cell(v, ExcelImportColumns.ownership)),
       'address_store': _cell(v, ExcelImportColumns.address),
       'code_posti_store': _cell(v, ExcelImportColumns.postalCode),
-      'mantaghe_store': '',
-      'lat_store': '',
-      'long_store': '',
+      'mantaghe_store': _cell(v, ExcelImportColumns.district),
+      'lat_store': _cell(v, ExcelImportColumns.lat),
+      'long_store': _cell(v, ExcelImportColumns.lng),
       'state_store': _cell(v, ExcelImportColumns.state),
       'city_store': city,
       'date_sodor_store': issueGregorian,
