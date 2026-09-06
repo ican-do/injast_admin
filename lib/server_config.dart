@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 
 const String publicWebOrigin = 'http://injast-web.ir';
 
@@ -11,17 +11,21 @@ const String kDefaultApiPort =
 const String kDefaultAdminApiPort =
     String.fromEnvironment('ADMIN_API_PORT', defaultValue: '4000');
 
+/// آدرس مستقیم Node — ویندوز/دسکتاپ همیشه همین را می‌زند
+String get nativeApiBaseUrl =>
+    '$kDefaultApiProtocol://$kDefaultApiIp:$kDefaultApiPort';
+
 /// مبدأ فایل‌های استاتیک (`/pic_injast`) — بدون پیشوند `/api`
-String get mediaOrigin => kDebugMode
-    ? '$kDefaultApiProtocol://$kDefaultApiIp:$kDefaultApiPort'
+String get mediaOrigin => (!kIsWeb || kDebugMode)
+    ? nativeApiBaseUrl
     : publicWebOrigin;
 
-String get serverApiBaseUrl => kDebugMode
-    ? '$kDefaultApiProtocol://$kDefaultApiIp:$kDefaultApiPort'
+String get serverApiBaseUrl => (!kIsWeb || kDebugMode)
+    ? nativeApiBaseUrl
     : '$publicWebOrigin/api';
 
 /// سرویس ادمین (قوانین، درخواست‌ها، مزایا) — روی IIS معمولاً `/api2`
-String get adminApiBaseUrl => kDebugMode
+String get adminApiBaseUrl => (!kIsWeb || kDebugMode)
     ? '$kDefaultApiProtocol://$kDefaultApiIp:$kDefaultAdminApiPort'
     : '$publicWebOrigin/api2';
 
