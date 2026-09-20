@@ -11,7 +11,9 @@ enum ParvanehContentKind { html, pdf, image }
 class MediaFileUrls {
   MediaFileUrls._();
 
-  static String get mediaHost => mediaOrigin;
+  static String get mediaHost => staticOrigin;
+
+  static String get serverOrigin => apiOrigin;
 
   /// تصویر دلخواه واحد صنفی (p1..p4)
   static String storeImageUrl({
@@ -41,6 +43,15 @@ class MediaFileUrls {
 
     var normalized = t.replaceAll('\\', '/');
     if (normalized.startsWith('http://') || normalized.startsWith('https://')) {
+      final uri = Uri.tryParse(normalized);
+      if (uri != null &&
+          (uri.host == serverApiIp ||
+              uri.host == 'injast-web.ir' ||
+              uri.host == 'www.injast-web.ir')) {
+        final path = uri.path.isEmpty ? '/' : uri.path;
+        _addOwnServerPaths(add, path);
+        return urls;
+      }
       add(normalized.replaceAll(' ', '%20'));
       return urls;
     }
@@ -48,8 +59,7 @@ class MediaFileUrls {
     if (normalized.startsWith('/pic_injast/') ||
         normalized.startsWith('pic_injast/')) {
       final path = normalized.startsWith('/') ? normalized : '/$normalized';
-      add('$serverApiBaseUrl$path'.replaceAll(' ', '%20'));
-      add('$mediaHost$path'.replaceAll(' ', '%20'));
+      _addOwnServerPaths(add, path);
       return urls;
     }
 
@@ -61,8 +71,29 @@ class MediaFileUrls {
 
     final rel = normalized.replaceFirst(RegExp(r'^/+'), '');
     add('https://apinovin.iranianasnaf.ir/$rel'.replaceAll(' ', '%20'));
-    add('$serverApiBaseUrl/$rel'.replaceAll(' ', '%20'));
+    _addOwnServerPaths(add, '/$rel');
     return urls;
+  }
+
+  /// HTTPS دامنه + در صورت نیاز HTTP مستقیم به Node (fallback وقتی SSL/پروکسی تصویر مشکل دارد)
+  static void _addOwnServerPaths(void Function(String?) add, String path) {
+    final p = path.startsWith('/') ? path : '/$path';
+    final encoded = p.replaceAll(' ', '%20');
+    add('$mediaHost$encoded');
+
+    // apiOrigin گاهی `.../api` است؛ /pic_injast را نباید زیر /api بگذاریم
+    final api = apiOrigin;
+    final apiLooksLikeApiPrefix = api == '/api' ||
+        api.endsWith('/api') ||
+        api.contains('/api/');
+    if (api.isNotEmpty && api != mediaHost && !apiLooksLikeApiPrefix) {
+      add('$api$encoded');
+    }
+
+    final native = nativeApiBaseUrl;
+    if (native.isNotEmpty && native != mediaHost) {
+      add('$native$encoded');
+    }
   }
 
   /// چند URL محتمل برای تصویر پروفایل (سرور + CDN اصناف)
@@ -104,7 +135,7 @@ class MediaFileUrls {
 
     final urls = <String>{};
     void addPath(String p) {
-      urls.add('$serverApiBaseUrl$p');
+      urls.add('$apiOrigin$p');
       urls.add('$mediaHost$p');
     }
 
@@ -124,7 +155,8 @@ class MediaFileUrls {
     list.sort((a, b) {
       int score(String u) {
         var s = 0;
-        if (u.contains(':8080')) s += 5;
+        if (apiOrigin.isNotEmpty && u.startsWith(apiOrigin)) s += 5;
+        if (u.contains(':8080')) s += 4;
         if (u.toLowerCase().endsWith('.jpg')) s += 3;
         if (u.toLowerCase().endsWith('.html')) s += 2;
         if (u.toLowerCase().endsWith('.pdf')) s += 1;

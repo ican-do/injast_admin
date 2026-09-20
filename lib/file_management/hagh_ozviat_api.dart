@@ -99,31 +99,54 @@ class HaghOzviatApi {
   }
 
   /// خلاصهٔ حق عضویت همهٔ اعضای یک اتحادیه (برای کارت‌های پرونده).
+  /// مثل موبایل: اول POST با body، در صورت شکست GET قدیمی.
   Future<Map<String, HaghOzviatMemberIndex>> fetchIndex(String codeCo) async {
-    final uri = Uri.parse(
-      getApiUrl(
-        'select/select_hagh_ozviat_index/${Uri.encodeComponent(codeCo)}',
-      ),
-    );
-    final res = await http.get(uri).timeout(const Duration(seconds: 120));
-    if (res.statusCode == 404) return const {};
-    if (res.statusCode != 200) {
-      return const {};
-    }
-    final body = jsonDecode(res.body);
-    if (body is! List) return const {};
+    final code = codeCo.trim();
+    if (code.isEmpty) return const {};
 
-    final map = <String, HaghOzviatMemberIndex>{};
-    for (final item in body) {
-      if (item is! Map) continue;
-      final idx = HaghOzviatMemberIndex.fromJson(
-        Map<String, dynamic>.from(item),
-      );
-      final key = ExcelImportShenase.normalize(idx.shenaseStore);
-      if (key.isEmpty) continue;
-      map[key] = idx;
+    Future<Map<String, HaghOzviatMemberIndex>> parse(String body) async {
+      final decoded = jsonDecode(body);
+      if (decoded is! List) return const {};
+      final map = <String, HaghOzviatMemberIndex>{};
+      for (final item in decoded) {
+        if (item is! Map) continue;
+        final idx = HaghOzviatMemberIndex.fromJson(
+          Map<String, dynamic>.from(item),
+        );
+        final key = ExcelImportShenase.normalize(idx.shenaseStore);
+        if (key.isEmpty) continue;
+        map[key] = idx;
+      }
+      return map;
     }
-    return map;
+
+    try {
+      final postUri =
+          Uri.parse(getApiUrl('select/select_hagh_ozviat_index'));
+      final postRes = await http
+          .post(
+            postUri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'code_co': code}),
+          )
+          .timeout(const Duration(seconds: 120));
+      if (postRes.statusCode == 200) {
+        final map = await parse(postRes.body);
+        if (map.isNotEmpty) return map;
+      }
+    } catch (_) {}
+
+    try {
+      final getUri = Uri.parse(
+        getApiUrl(
+          'select/select_hagh_ozviat_index/${Uri.encodeComponent(code)}',
+        ),
+      );
+      final getRes = await http.get(getUri).timeout(const Duration(seconds: 120));
+      if (getRes.statusCode == 200) return parse(getRes.body);
+    } catch (_) {}
+
+    return const {};
   }
 
   Future<HaghOzviatMemberSummary> fetchSummary({

@@ -31,6 +31,14 @@ void _addUnionCodesToParams(Map<String, String> params, String? unionCodes) {
   }
 }
 
+Future<http.Response> _postReport(String path, Map<String, String> params) {
+  return http.post(
+    Uri.parse(getApiUrl(path)),
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode(params),
+  );
+}
+
 /// گزارش 1: تعداد کل بازرسی‌ها در بازه زمانی
 Future<List<Map<String, dynamic>>> getTotalBazrasiByTimeRange(
   String period, // daily, weekly, monthly, yearly
@@ -53,11 +61,8 @@ Future<List<Map<String, dynamic>>> getTotalBazrasiByTimeRange(
       if (endDate != null) 'end_date': endDate.toIso8601String().split('T')[0],
       if (unionCodes != null && unionCodes.trim().isNotEmpty) 'union_codes': unionCodes,
     };
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/total_by_time_range/$period'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    params['period'] = period;
+    final response = await _postReport('reports/bazrasi/total_by_time_range', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -87,11 +92,7 @@ Future<List<Map<String, dynamic>>> getBazrasiByLicenseStatus({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/by_license_status'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/by_license_status', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -126,11 +127,8 @@ Future<List<Map<String, dynamic>>> getBazrasiByLocation(
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/by_location/$groupBy'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    params['group_by'] = groupBy;
+    final response = await _postReport('reports/bazrasi/by_location', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -161,11 +159,7 @@ Future<Map<String, dynamic>> getAvgProcessingTime({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/avg_processing_time'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/avg_processing_time', params);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
@@ -194,11 +188,7 @@ Future<Map<String, dynamic>> getActiveInactiveRatio({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/active_inactive_ratio'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/active_inactive_ratio', params);
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
@@ -228,11 +218,8 @@ Future<List<Map<String, dynamic>>> getMostCommonViolations(
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/most_common_violations/$limit'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    params['limit'] = limit.toString();
+    final response = await _postReport('reports/bazrasi/most_common_violations', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -252,11 +239,7 @@ Future<List<Map<String, dynamic>>> getInspectors({
 }) async {
   try {
     var params = _addUserInfoToParams(<String, String>{}, userInfo: userInfo);
-    final response = await http.get(
-      Uri.parse(
-        getApiUrl('reports/bazrasi/inspectors'),
-      ).replace(queryParameters: params),
-    );
+    final response = await _postReport('reports/bazrasi/inspectors', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -287,11 +270,7 @@ Future<Map<String, dynamic>> getPerformanceWithExcel({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/performance_with_excel'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/performance_with_excel', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as Map<String, dynamic>;
@@ -311,11 +290,7 @@ Future<List<Map<String, dynamic>>> getUnions({
 }) async {
   try {
     var params = _addUserInfoToParams(<String, String>{}, userInfo: userInfo);
-    final response = await http.get(
-      Uri.parse(
-        getApiUrl('reports/bazrasi/unions'),
-      ).replace(queryParameters: params),
-    );
+    final response = await _postReport('reports/bazrasi/unions', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -347,11 +322,7 @@ Future<List<Map<String, dynamic>>> getViolationsByLicenseStatus({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/violations_by_license_status'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/violations_by_license_status', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -383,11 +354,7 @@ Future<List<Map<String, dynamic>>> getViolationsByUnion({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/violations_by_union'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/violations_by_union', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -420,11 +387,8 @@ Future<List<Map<String, dynamic>>> getBlacklistUnits(
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/blacklist_units/$minViolations'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    params['min_violations'] = minViolations.toString();
+    final response = await _postReport('reports/bazrasi/blacklist_units', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -454,11 +418,7 @@ Future<List<Map<String, dynamic>>> getInspectorInspectionCount({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/inspector_inspection_count'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/inspector_inspection_count', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -488,11 +448,7 @@ Future<List<Map<String, dynamic>>> getInspectorAvgViolations({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/inspector_avg_violations'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/inspector_avg_violations', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -522,11 +478,7 @@ Future<List<Map<String, dynamic>>> getInspectorEfficiency({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/inspector_efficiency'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/inspector_efficiency', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -558,11 +510,7 @@ Future<List<Map<String, dynamic>>> getSentToAmaken({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/sent_to_amaken'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/sent_to_amaken', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -594,11 +542,7 @@ Future<List<Map<String, dynamic>>> getExecutedCases({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/executed_cases'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/executed_cases', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -630,11 +574,7 @@ Future<Map<String, dynamic>> getClosedCasesPercentage({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/closed_cases_percentage'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/closed_cases_percentage', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as Map<String, dynamic>;
@@ -668,11 +608,7 @@ Future<Map<String, dynamic>> getPendingCasesDelay({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/pending_cases_delay'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/pending_cases_delay', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as Map<String, dynamic>;
@@ -707,11 +643,7 @@ Future<List<Map<String, dynamic>>> getHighViolationAreas({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/high_violation_areas'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/high_violation_areas', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -744,11 +676,7 @@ Future<List<Map<String, dynamic>>> getViolationTrend({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/violation_trend'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/violation_trend', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -778,11 +706,7 @@ Future<List<Map<String, dynamic>>> getRiskPrediction({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/risk_prediction'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/risk_prediction', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -808,11 +732,7 @@ Future<Map<String, dynamic>> getMonthlyComparison({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/monthly_comparison'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/monthly_comparison', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as Map<String, dynamic>;
@@ -847,11 +767,7 @@ Future<List<Map<String, dynamic>>> getImportantCases({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/important_cases'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/important_cases', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -884,11 +800,7 @@ Future<List<Map<String, dynamic>>> getRepeatWarningsNoFix({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/repeat_warnings_no_fix'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/repeat_warnings_no_fix', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -922,11 +834,7 @@ Future<List<Map<String, dynamic>>> getCaseLifecycle({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/case_lifecycle'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/case_lifecycle', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as List<dynamic>;
@@ -956,11 +864,7 @@ Future<Map<String, dynamic>> getUnionsComparison({
     _addUnionCodesToParams(params, unionCodes);
     params = _addUserInfoToParams(params, userInfo: userInfo);
     
-    final uri = Uri.parse(
-      getApiUrl('reports/bazrasi/unions_comparison'),
-    ).replace(queryParameters: params);
-
-    final response = await http.get(uri);
+    final response = await _postReport('reports/bazrasi/unions_comparison', params);
 
     if (response.statusCode == 200) {
       final jsonData = jsonDecode(response.body) as Map<String, dynamic>;

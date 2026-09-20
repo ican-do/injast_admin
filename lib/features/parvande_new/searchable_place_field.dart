@@ -79,6 +79,7 @@ class SearchablePlaceField extends StatelessWidget {
             },
             decoration: AdminUi.fieldDecoration(
               label,
+              required: requiredField,
               hint: 'جستجو و انتخاب $label',
               suffix: loading
                   ? const Padding(

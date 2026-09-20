@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/features/parvande_new/location_pick_dialog.dart';
+import 'package:injast_admin/features/parvande_new/parvande_register_mode.dart';
 import 'package:injast_admin/features/parvande_new/place_api.dart';
 import 'package:injast_admin/features/parvande_new/searchable_place_field.dart';
 import 'package:injast_admin/features/shared/admin_ui.dart';
@@ -12,17 +13,60 @@ import 'package:injast_admin/server_config.dart';
 import 'package:persian_datetimepickers/persian_datetimepickers.dart';
 import 'package:shamsi_date/shamsi_date.dart';
 
+const List<String> _kParvandeStatusLabels = [
+  'دردست اقدام',
+  'فعال/صادر شده',
+  'منقضی شده',
+  'ابطال',
+  'ابطال متقاضی',
+  'تعلیق',
+  'فاقد اعتبار',
+  'تغییر نشانی',
+  'فاقد پروانه',
+  'پلمپ',
+];
+
+String _codeForVaziyatLabel(String label) {
+  switch (label.trim()) {
+    case 'دردست اقدام':
+    case 'در دست اقدام':
+      return '1';
+    case 'فعال/صادر شده':
+      return '2';
+    case 'منقضی شده':
+      return '3';
+    case 'تغییر نشانی':
+      return '4';
+    case 'ابطال متقاضی':
+      return '6';
+    case 'ابطال':
+      return '8';
+    case 'فاقد اعتبار':
+      return '10';
+    case 'تعلیق':
+      return '11';
+    case 'فاقد پروانه':
+      return '13';
+    case 'پلمپ':
+      return '14';
+    default:
+      return '1';
+  }
+}
+
 class NewParvandePage extends StatefulWidget {
   const NewParvandePage({
     super.key,
     required this.codeCo,
     required this.idUser,
     this.unionInfo,
+    this.registerMode = ParvandeRegisterMode.full,
   });
 
   final String codeCo;
   final String idUser;
   final Map<String, dynamic>? unionInfo;
+  final ParvandeRegisterMode registerMode;
 
   @override
   State<NewParvandePage> createState() => _NewParvandePageState();
@@ -40,6 +84,7 @@ class _NewParvandePageState extends State<NewParvandePage> {
   String _sex = 'مرد';
   String _ownership = 'ملکی';
   String _licenseValidity = 'پنج ساله';
+  String _vaziyatLabel = 'فاقد پروانه';
   bool _loadingRaste = true;
   bool _loadingStates = true;
   bool _loadingCities = false;
@@ -255,6 +300,7 @@ class _NewParvandePageState extends State<NewParvandePage> {
           onTap: date ? () => _pickDate(key) : null,
           decoration: AdminUi.fieldDecoration(
             label,
+            required: required,
             suffix: suffix ?? (date ? const Icon(Icons.date_range) : null),
           ),
         ),
@@ -322,6 +368,11 @@ class _NewParvandePageState extends State<NewParvandePage> {
       showAdminSnack(context, 'استان و شهرستان را انتخاب کنید', error: true);
       return;
     }
+    if (_c('lat_store').text.trim().isEmpty ||
+        _c('long_store').text.trim().isEmpty) {
+      showAdminSnack(context, 'موقعیت روی نقشه را مشخص کنید', error: true);
+      return;
+    }
     setState(() => _saving = true);
     final body = <String, dynamic>{
       'code_co': widget.codeCo,
@@ -356,8 +407,8 @@ class _NewParvandePageState extends State<NewParvandePage> {
       'date_etebar_store': _licenseValidity,
       'daraje_store': _c('daraje_store').text.trim(),
       'num_parvande_store': _c('num_parvande_store').text.trim(),
-      'vaziyat_store': '1',
-      'lbl_vaziyat_store': 'فعال',
+      'vaziyat_store': _codeForVaziyatLabel(_vaziyatLabel),
+      'lbl_vaziyat_store': _vaziyatLabel,
       'num_person_store': _c('num_person_store').text.trim(),
       'caption_parvande': _c('caption_parvande').text.trim(),
       'id_user': widget.idUser,
@@ -384,177 +435,239 @@ class _NewParvandePageState extends State<NewParvandePage> {
     }
   }
 
+  bool get _isQuick => widget.registerMode == ParvandeRegisterMode.quick;
+
+  Widget _vaziyatField() => SizedBox(
+        width: 350,
+        child: DropdownButtonFormField<String>(
+          key: ValueKey('vaziyat-$_vaziyatLabel'),
+          initialValue: _kParvandeStatusLabels.contains(_vaziyatLabel)
+              ? _vaziyatLabel
+              : _kParvandeStatusLabels.first,
+          isExpanded: true,
+          validator: (value) =>
+              value == null || value.trim().isEmpty ? 'وضعیت پرونده الزامی است' : null,
+          decoration: AdminUi.fieldDecoration('وضعیت پرونده', required: true),
+          items: _kParvandeStatusLabels
+              .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+              .toList(),
+          onChanged: (value) {
+            if (value == null) return;
+            setState(() => _vaziyatLabel = value);
+          },
+        ),
+      );
+
+  Widget _rasteField() => SizedBox(
+        width: 350,
+        child: DropdownButtonFormField<String>(
+          key: ValueKey('raste-$_selectedRaste-${_raste.length}'),
+          initialValue: _selectedRaste,
+          isExpanded: true,
+          validator: (value) => value == null ? 'انتخاب رسته الزامی است' : null,
+          decoration: AdminUi.fieldDecoration(
+            'رسته',
+            required: true,
+            suffix: _loadingRaste
+                ? const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : null,
+          ),
+          items: _raste
+              .map(
+                (e) => DropdownMenuItem(
+                  value: e,
+                  child: Text(e, overflow: TextOverflow.ellipsis, maxLines: 1),
+                ),
+              )
+              .toList(),
+          onChanged: _loadingRaste
+              ? null
+              : (value) => setState(() => _selectedRaste = value),
+        ),
+      );
+
+  Widget _mapFields() => SizedBox(
+        width: 724,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              spacing: 14,
+              runSpacing: 14,
+              children: [
+                _field('lat_store', 'عرض جغرافیایی', required: true, readOnly: true),
+                _field('long_store', 'طول جغرافیایی', required: true, readOnly: true),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.tonalIcon(
+                onPressed: _openMapPicker,
+                icon: const Icon(Icons.map_outlined),
+                label: const Text('انتخاب موقعیت روی نقشه *'),
+              ),
+            ),
+          ],
+        ),
+      );
+
+  List<Widget> _quickFields() => [
+        _section('ثبت سریع پرونده', Icons.flash_on_outlined, [
+          _vaziyatField(),
+          _field('name_admin', 'نام', required: true),
+          _field('family_admin', 'نام خانوادگی', required: true),
+          _field('code_meli_admin', 'کد ملی',
+              required: true, keyboard: TextInputType.number),
+          _field('mob_admin', 'شماره همراه',
+              required: true, keyboard: TextInputType.phone),
+          _field('name_store', 'نام واحد صنفی', required: true),
+          _rasteField(),
+          SearchablePlaceField(
+            label: 'استان',
+            options: _states,
+            value: _selectedState,
+            loading: _loadingStates,
+            requiredField: true,
+            onSelected: _onStateSelected,
+          ),
+          SearchablePlaceField(
+            label: 'شهرستان',
+            options: _cities,
+            value: _selectedCity,
+            enabled: _selectedState != null,
+            loading: _loadingCities,
+            requiredField: true,
+            onSelected: (city) => setState(() => _selectedCity = city),
+          ),
+          _mapFields(),
+          _field('address_store', 'آدرس کامل', required: true, lines: 3),
+        ]),
+      ];
+
+  List<Widget> _fullFields() => [
+        _section('اطلاعات مالک', Icons.person_outline, [
+          _vaziyatField(),
+          _field('name_admin', 'نام', required: true),
+          _field('family_admin', 'نام خانوادگی', required: true),
+          SizedBox(
+            width: 350,
+            child: DropdownButtonFormField<String>(
+              initialValue: _sex,
+              isExpanded: true,
+              decoration: AdminUi.fieldDecoration('جنسیت'),
+              items: const [
+                DropdownMenuItem(value: 'مرد', child: Text('مرد')),
+                DropdownMenuItem(value: 'زن', child: Text('زن')),
+              ],
+              onChanged: (value) => setState(() => _sex = value ?? _sex),
+            ),
+          ),
+          _field('name_pedar_admin', 'نام پدر'),
+          _field('code_meli_admin', 'کد ملی',
+              required: true, keyboard: TextInputType.number),
+          _field('num_shenasname_admin', 'شماره شناسنامه',
+              keyboard: TextInputType.number),
+          _field('sadere_admin', 'محل صدور'),
+          _field('tavalod_admin', 'تاریخ تولد', date: true),
+          _field('mob_admin', 'شماره همراه',
+              required: true, keyboard: TextInputType.phone),
+          _field('tel_admin', 'تلفن ثابت', keyboard: TextInputType.phone),
+          _field('madrak_admin', 'مدرک تحصیلی'),
+          _field('din_admin', 'دین'),
+          _field('sarbazi_admin', 'وضعیت نظام وظیفه'),
+          _field('taahol_admin', 'وضعیت تأهل'),
+        ]),
+        const SizedBox(height: 14),
+        _section('اطلاعات واحد صنفی', Icons.store_outlined, [
+          _field('name_store', 'نام واحد صنفی', required: true),
+          _field('shenase_store', 'شناسه واحد'),
+          _rasteField(),
+          _field('masahat_store', 'مساحت', keyboard: TextInputType.number),
+          SizedBox(
+            width: 350,
+            child: DropdownButtonFormField<String>(
+              initialValue: _ownership,
+              isExpanded: true,
+              decoration: AdminUi.fieldDecoration('نوع مالکیت'),
+              items: const [
+                DropdownMenuItem(value: 'ملکی', child: Text('ملکی')),
+                DropdownMenuItem(value: 'استیجاری', child: Text('استیجاری')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _ownership = value ?? _ownership),
+            ),
+          ),
+          _field('num_person_store', 'تعداد کارکنان',
+              keyboard: TextInputType.number),
+          _field('daraje_store', 'درجه واحد'),
+          _field('num_parvande_store', 'شماره پرونده'),
+        ]),
+        const SizedBox(height: 14),
+        _section('نشانی واحد صنفی', Icons.location_on_outlined, [
+          SearchablePlaceField(
+            label: 'استان',
+            options: _states,
+            value: _selectedState,
+            loading: _loadingStates,
+            requiredField: true,
+            onSelected: _onStateSelected,
+          ),
+          SearchablePlaceField(
+            label: 'شهرستان',
+            options: _cities,
+            value: _selectedCity,
+            enabled: _selectedState != null,
+            loading: _loadingCities,
+            requiredField: true,
+            onSelected: (city) => setState(() => _selectedCity = city),
+          ),
+          _field('mantaghe_store', 'منطقه'),
+          _field('code_posti_store', 'کد پستی', keyboard: TextInputType.number),
+          _mapFields(),
+          _field('address_store', 'آدرس کامل', required: true, lines: 3),
+        ]),
+        const SizedBox(height: 14),
+        _section('اطلاعات پروانه', Icons.badge_outlined, [
+          _field('date_sodor_store', 'تاریخ صدور', date: true),
+          _field('date_exp_store', 'تاریخ انقضا', date: true),
+          SizedBox(
+            width: 350,
+            child: DropdownButtonFormField<String>(
+              initialValue: _licenseValidity,
+              isExpanded: true,
+              decoration: AdminUi.fieldDecoration('اعتبار پروانه'),
+              items: const [
+                DropdownMenuItem(value: 'ده ساله', child: Text('ده ساله')),
+                DropdownMenuItem(value: 'پنج ساله', child: Text('پنج ساله')),
+                DropdownMenuItem(value: 'یک ساله', child: Text('یک ساله')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _licenseValidity = value ?? _licenseValidity),
+            ),
+          ),
+          _field('caption_parvande', 'توضیحات پرونده', lines: 3),
+        ]),
+      ];
+
   @override
   Widget build(BuildContext context) {
     return AdminPageShell(
-      title: 'پرونده جدید',
-      subtitle: 'ثبت مالک و واحد صنفی',
-      icon: Icons.create_new_folder_outlined,
+      title: _isQuick ? 'ثبت سریع پرونده' : 'پرونده جدید',
+      subtitle: _isQuick
+          ? 'فقط فیلدهای ستاره‌دار / اجباری'
+          : 'ثبت مالک و واحد صنفی — فیلدهای ستاره‌دار الزامی هستند',
+      icon: _isQuick ? Icons.flash_on_outlined : Icons.create_new_folder_outlined,
       maxWidth: 1100,
       child: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.all(18),
           children: [
-            _section('اطلاعات مالک', Icons.person_outline, [
-              _field('name_admin', 'نام', required: true),
-              _field('family_admin', 'نام خانوادگی', required: true),
-              SizedBox(
-                width: 350,
-                child: DropdownButtonFormField<String>(
-                  initialValue: _sex,
-                  isExpanded: true,
-                  decoration: AdminUi.fieldDecoration('جنسیت'),
-                  items: const [
-                    DropdownMenuItem(value: 'مرد', child: Text('مرد')),
-                    DropdownMenuItem(value: 'زن', child: Text('زن')),
-                  ],
-                  onChanged: (value) => setState(() => _sex = value ?? _sex),
-                ),
-              ),
-              _field('name_pedar_admin', 'نام پدر'),
-              _field('code_meli_admin', 'کد ملی',
-                  required: true, keyboard: TextInputType.number),
-              _field('num_shenasname_admin', 'شماره شناسنامه',
-                  keyboard: TextInputType.number),
-              _field('sadere_admin', 'محل صدور'),
-              _field('tavalod_admin', 'تاریخ تولد', date: true),
-              _field('mob_admin', 'شماره همراه',
-                  required: true, keyboard: TextInputType.phone),
-              _field('tel_admin', 'تلفن ثابت', keyboard: TextInputType.phone),
-              _field('madrak_admin', 'مدرک تحصیلی'),
-              _field('din_admin', 'دین'),
-              _field('sarbazi_admin', 'وضعیت نظام وظیفه'),
-              _field('taahol_admin', 'وضعیت تأهل'),
-            ]),
-            const SizedBox(height: 14),
-            _section('اطلاعات واحد صنفی', Icons.store_outlined, [
-              _field('name_store', 'نام واحد صنفی', required: true),
-              _field('shenase_store', 'شناسه واحد'),
-              SizedBox(
-                width: 350,
-                child: DropdownButtonFormField<String>(
-                  initialValue: _selectedRaste,
-                  isExpanded: true,
-                  validator: (value) =>
-                      value == null ? 'انتخاب رسته الزامی است' : null,
-                  decoration: AdminUi.fieldDecoration(
-                    'رسته',
-                    suffix: _loadingRaste
-                        ? const Padding(
-                            padding: EdgeInsets.all(14),
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : null,
-                  ),
-                  items: _raste
-                      .map(
-                        (e) => DropdownMenuItem(
-                          value: e,
-                          child: Text(
-                            e,
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: _loadingRaste
-                      ? null
-                      : (value) => setState(() => _selectedRaste = value),
-                ),
-              ),
-              _field('masahat_store', 'مساحت', keyboard: TextInputType.number),
-              SizedBox(
-                width: 350,
-                child: DropdownButtonFormField<String>(
-                  initialValue: _ownership,
-                  isExpanded: true,
-                  decoration: AdminUi.fieldDecoration('نوع مالکیت'),
-                  items: const [
-                    DropdownMenuItem(value: 'ملکی', child: Text('ملکی')),
-                    DropdownMenuItem(
-                        value: 'استیجاری', child: Text('استیجاری')),
-                  ],
-                  onChanged: (value) =>
-                      setState(() => _ownership = value ?? _ownership),
-                ),
-              ),
-              _field('num_person_store', 'تعداد کارکنان',
-                  keyboard: TextInputType.number),
-              _field('daraje_store', 'درجه واحد'),
-              _field('num_parvande_store', 'شماره پرونده'),
-            ]),
-            const SizedBox(height: 14),
-            _section('نشانی واحد صنفی', Icons.location_on_outlined, [
-              SearchablePlaceField(
-                label: 'استان',
-                options: _states,
-                value: _selectedState,
-                loading: _loadingStates,
-                requiredField: true,
-                onSelected: _onStateSelected,
-              ),
-              SearchablePlaceField(
-                label: 'شهرستان',
-                options: _cities,
-                value: _selectedCity,
-                enabled: _selectedState != null,
-                loading: _loadingCities,
-                requiredField: true,
-                onSelected: (city) => setState(() => _selectedCity = city),
-              ),
-              _field('mantaghe_store', 'منطقه'),
-              _field('code_posti_store', 'کد پستی',
-                  keyboard: TextInputType.number),
-              SizedBox(
-                width: 724,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Wrap(
-                      spacing: 14,
-                      runSpacing: 14,
-                      children: [
-                        _field('lat_store', 'عرض جغرافیایی', readOnly: true),
-                        _field('long_store', 'طول جغرافیایی', readOnly: true),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: FilledButton.tonalIcon(
-                        onPressed: _openMapPicker,
-                        icon: const Icon(Icons.map_outlined),
-                        label: const Text('انتخاب موقعیت روی نقشه'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              _field('address_store', 'آدرس کامل', required: true, lines: 3),
-            ]),
-            const SizedBox(height: 14),
-            _section('اطلاعات پروانه', Icons.badge_outlined, [
-              _field('date_sodor_store', 'تاریخ صدور', date: true),
-              _field('date_exp_store', 'تاریخ انقضا', date: true),
-              SizedBox(
-                width: 350,
-                child: DropdownButtonFormField<String>(
-                  initialValue: _licenseValidity,
-                  isExpanded: true,
-                  decoration: AdminUi.fieldDecoration('اعتبار پروانه'),
-                  items: const [
-                    DropdownMenuItem(value: 'ده ساله', child: Text('ده ساله')),
-                    DropdownMenuItem(
-                        value: 'پنج ساله', child: Text('پنج ساله')),
-                    DropdownMenuItem(value: 'یک ساله', child: Text('یک ساله')),
-                  ],
-                  onChanged: (value) => setState(
-                      () => _licenseValidity = value ?? _licenseValidity),
-                ),
-              ),
-              _field('caption_parvande', 'توضیحات پرونده', lines: 3),
-            ]),
+            ...(_isQuick ? _quickFields() : _fullFields()),
             const SizedBox(height: 18),
             Align(
               alignment: Alignment.centerLeft,
@@ -565,9 +678,10 @@ class _NewParvandePageState extends State<NewParvandePage> {
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
+                            strokeWidth: 2, color: Colors.white),
+                      )
                     : const Icon(Icons.save_outlined),
-                label: const Text('ثبت پرونده'),
+                label: Text(_isQuick ? 'ثبت سریع' : 'ثبت پرونده'),
               ),
             ),
             const SizedBox(height: 30),

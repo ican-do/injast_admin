@@ -107,7 +107,8 @@ class _ParvandeLicenseDialogState extends State<ParvandeLicenseDialog> {
     if (path.isEmpty) return null;
     if (!path.startsWith('/')) path = '/$path';
 
-    for (final base in [serverApiBaseUrl, MediaFileUrls.mediaHost]) {
+    for (final base in [mediaOrigin, MediaFileUrls.mediaHost, apiOrigin]) {
+      if (base.isEmpty) continue;
       try {
         final url = '$base$path';
         final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 30));

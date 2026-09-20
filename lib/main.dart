@@ -7,12 +7,13 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:injast_admin/api_token.dart';
+import 'package:injast_admin/api_transport.dart';
 import 'package:injast_admin/asnaf_site_page.dart';
 import 'package:injast_admin/features/benefits/manage_benefits_page.dart';
 import 'package:injast_admin/features/calendar/my_calendar_page.dart';
 import 'package:injast_admin/features/laws/manage_laws_page.dart';
 import 'package:injast_admin/features/news/manage_news_page.dart';
-import 'package:injast_admin/features/parvande_new/new_parvande_page.dart';
+import 'package:injast_admin/features/parvande_new/parvande_register_mode.dart';
 import 'package:injast_admin/features/permissions/manage_access_page.dart';
 import 'package:injast_admin/features/personnel/manage_personnel_page.dart';
 import 'package:injast_admin/features/personnel/personnel_display_page.dart';
@@ -58,7 +59,11 @@ void main() {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
     await _initLocalDatabase();
-    await ApiToken.load();
+    await initApiTransport();
+    await ApiToken.load().timeout(
+      const Duration(seconds: 3),
+      onTimeout: () {},
+    );
     runApp(const InjastAdminApp());
   }, (error, stack) {
     debugPrint('main zone error: $error\n$stack');
@@ -387,6 +392,7 @@ class _PanelItemTile extends StatelessWidget {
                 currentUserRole: userRoleLabel(typeUser),
                 currentUserType: typeUser,
                 isSuperAdmin: typeUser?.trim().toLowerCase() == 'super_admin',
+                unionInfo: _UserContext.unionOf(context),
               ));
               return;
             case 'inspection_map':
@@ -442,11 +448,12 @@ class _PanelItemTile extends StatelessWidget {
               return;
             case 'new_parvande':
               if (!requireCodeCo()) return;
-              await push(NewParvandePage(
+              await startNewParvandeAdminFlow(
+                context,
                 codeCo: codeCo,
                 idUser: idUser.isEmpty ? '0' : idUser,
                 unionInfo: _UserContext.unionOf(context),
-              ));
+              );
               return;
             case 'shekayat_hub':
               if (!requireCodeCo()) return;

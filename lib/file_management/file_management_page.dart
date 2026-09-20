@@ -5,7 +5,7 @@ import 'package:injast_admin/file_management/advanced_search_sheet.dart';
 import 'package:injast_admin/file_management/parvande_api.dart';
 import 'package:injast_admin/file_management/parvande_card.dart';
 import 'package:injast_admin/file_management/parvande_details_dialog.dart';
-import 'package:injast_admin/file_management/placeholders/feature_placeholder_page.dart';
+import 'package:injast_admin/features/parvande_new/parvande_register_mode.dart';
 import 'package:injast_admin/file_management/trash_sheet.dart';
 import 'package:injast_admin/file_management/bazrasi_records_sheet.dart';
 import 'package:injast_admin/file_management/new_bazrasi_sheet.dart';
@@ -43,6 +43,7 @@ class FileManagementPage extends StatefulWidget {
     this.currentUserRole,
     this.currentUserType,
     this.isSuperAdmin = false,
+    this.unionInfo,
   });
 
   final String codeCo;
@@ -53,6 +54,7 @@ class FileManagementPage extends StatefulWidget {
   /// کلید خام type_user برای بررسی دسترسی
   final String? currentUserType;
   final bool isSuperAdmin;
+  final Map<String, dynamic>? unionInfo;
 
   @override
   State<FileManagementPage> createState() => _FileManagementPageState();
@@ -75,6 +77,11 @@ class _FileManagementPageState extends State<FileManagementPage> {
   bool _haghIndexLoaded = false;
   ParvandeShekayatIndex? _shekayatIndex;
   bool _shekayatIndexLoaded = false;
+
+  /// تعداد کارت در صفحه؛ `-1` یعنی همه
+  static const List<int> _pageSizeOptions = [6, 36, 72, -1];
+  int _pageSize = 36;
+  int _currentPage = 0;
 
   @override
   void initState() {
@@ -383,6 +390,40 @@ class _FileManagementPageState extends State<FileManagementPage> {
       ].join(' ').toLowerCase();
       return bag.contains(q);
     }).toList();
+  }
+
+  int _totalPagesFor(int totalItems) {
+    if (_pageSize <= 0) return 1;
+    if (totalItems <= 0) return 1;
+    return ((totalItems + _pageSize - 1) / _pageSize).floor();
+  }
+
+  List<Map<String, dynamic>> _pageItems(List<Map<String, dynamic>> visible) {
+    if (_pageSize <= 0 || visible.isEmpty) return visible;
+    final total = _totalPagesFor(visible.length);
+    if (_currentPage >= total) _currentPage = total - 1;
+    if (_currentPage < 0) _currentPage = 0;
+    final start = _currentPage * _pageSize;
+    final end = (start + _pageSize).clamp(0, visible.length);
+    return visible.sublist(start, end);
+  }
+
+  void _goToPage(int page, int totalPages) {
+    final next = page.clamp(0, totalPages - 1);
+    if (next == _currentPage) return;
+    setState(() => _currentPage = next);
+  }
+
+  void _setPageSize(int size) {
+    setState(() {
+      _pageSize = size;
+      _currentPage = 0;
+    });
+  }
+
+  void _resetPage() {
+    if (_currentPage == 0) return;
+    _currentPage = 0;
   }
 
   int get _trashCount => _all.where((e) => e.isTrash).length;
@@ -775,7 +816,10 @@ class _FileManagementPageState extends State<FileManagementPage> {
       ),
     );
     if (result != null) {
-      setState(() => _filters = result);
+      setState(() {
+        _filters = result;
+        _currentPage = 0;
+      });
     }
   }
 
@@ -868,26 +912,6 @@ class _FileManagementPageState extends State<FileManagementPage> {
       context,
       codeCo: widget.codeCo,
       parvande: p,
-    );
-  }
-
-  void _openPlaceholder(
-    String title,
-    IconData icon,
-    Color color,
-    Map<String, dynamic> p,
-  ) {
-    final info =
-        '${p.fullName.isEmpty ? '—' : p.fullName} • ${p.storeName.isEmpty ? '—' : p.storeName}';
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => FeaturePlaceholderPage(
-          title: title,
-          icon: icon,
-          color: color,
-          contextInfo: info,
-        ),
-      ),
     );
   }
 
@@ -1028,6 +1052,11 @@ class _FileManagementPageState extends State<FileManagementPage> {
   @override
   Widget build(BuildContext context) {
     final visible = _visible;
+    final pageItems = _pageItems(visible);
+    final totalPages = _totalPagesFor(visible.length);
+    final pageLabel = _pageSize <= 0 || visible.isEmpty
+        ? '${visible.length} پرونده'
+        : 'صفحه ${_currentPage + 1} از $totalPages — ${visible.length} پرونده';
     return Scaffold(
       appBar: AppBar(
         title: const Text('مدیریت پرونده‌ها'),
@@ -1041,16 +1070,14 @@ class _FileManagementPageState extends State<FileManagementPage> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => const FeaturePlaceholderPage(
-                title: 'پرونده جدید',
-                icon: FluentIcons.document_add_24_regular,
-                color: Color(0xFFEF6C00),
-              ),
-            ),
+        onPressed: () async {
+          final created = await startNewParvandeAdminFlow(
+            context,
+            codeCo: widget.codeCo,
+            idUser: widget.currentUserId ?? '0',
+            unionInfo: widget.unionInfo,
           );
+          if (created && mounted) await _load();
         },
         icon: const Icon(Icons.add),
         label: const Text('پرونده جدید'),
@@ -1060,8 +1087,12 @@ class _FileManagementPageState extends State<FileManagementPage> {
           : Column(
               children: [
                 _headerSection(visible.length),
+                _paginationBar(
+                  pageLabel: pageLabel,
+                  totalPages: totalPages,
+                ),
                 Expanded(
-                  child: visible.isEmpty
+                  child: pageItems.isEmpty
                       ? const Center(child: Text('موردی یافت نشد'))
                       : LayoutBuilder(
                           builder: (context, c) {
@@ -1084,14 +1115,105 @@ class _FileManagementPageState extends State<FileManagementPage> {
                                 mainAxisSpacing: 10,
                                 mainAxisExtent: cardHeight,
                               ),
-                              itemCount: visible.length,
-                              itemBuilder: (_, i) => _buildCard(visible[i]),
+                              itemCount: pageItems.length,
+                              itemBuilder: (_, i) => _buildCard(pageItems[i]),
                             );
                           },
                         ),
                 ),
               ],
             ),
+    );
+  }
+
+  Widget _paginationBar({
+    required String pageLabel,
+    required int totalPages,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7FAFD),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFDDE5EF)),
+        ),
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: 'ابتدا',
+              visualDensity: VisualDensity.compact,
+              onPressed:
+                  _currentPage > 0 ? () => _goToPage(0, totalPages) : null,
+              icon: const Icon(Icons.first_page, size: 22),
+            ),
+            IconButton(
+              tooltip: 'قبلی',
+              visualDensity: VisualDensity.compact,
+              onPressed: _currentPage > 0
+                  ? () => _goToPage(_currentPage - 1, totalPages)
+                  : null,
+              icon: const Icon(Icons.chevron_right, size: 22),
+            ),
+            Expanded(
+              child: Text(
+                pageLabel,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1E3A5F),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'بعدی',
+              visualDensity: VisualDensity.compact,
+              onPressed: _currentPage < totalPages - 1
+                  ? () => _goToPage(_currentPage + 1, totalPages)
+                  : null,
+              icon: const Icon(Icons.chevron_left, size: 22),
+            ),
+            IconButton(
+              tooltip: 'انتها',
+              visualDensity: VisualDensity.compact,
+              onPressed: _currentPage < totalPages - 1
+                  ? () => _goToPage(totalPages - 1, totalPages)
+                  : null,
+              icon: const Icon(Icons.last_page, size: 22),
+            ),
+            const SizedBox(width: 4),
+            const Text(
+              'در صفحه:',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(width: 4),
+            DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                value: _pageSizeOptions.contains(_pageSize) ? _pageSize : 36,
+                isDense: true,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w700,
+                ),
+                items: _pageSizeOptions
+                    .map(
+                      (s) => DropdownMenuItem<int>(
+                        value: s,
+                        child: Text(s <= 0 ? 'همه' : '$s'),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) {
+                  if (v != null) _setPageSize(v);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1122,7 +1244,9 @@ class _FileManagementPageState extends State<FileManagementPage> {
               flex: 3,
               child: TextField(
                 controller: _searchCtrl,
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) => setState(() {
+                  _resetPage();
+                }),
                 style: const TextStyle(fontSize: 13),
                 decoration: InputDecoration(
                   hintText: 'جستجو: نام، واحد، رسته، موبایل، کد صنفی...',
@@ -1246,7 +1370,10 @@ class _FileManagementPageState extends State<FileManagementPage> {
           ),
         ),
         selected: active,
-        onSelected: (_) => setState(() => _listFilter = filter),
+        onSelected: (_) => setState(() {
+          _listFilter = filter;
+          _resetPage();
+        }),
         selectedColor: color.withValues(alpha: 0.18),
         checkmarkColor: color,
         side: BorderSide(color: active ? color : const Color(0xFFDDE5EF)),

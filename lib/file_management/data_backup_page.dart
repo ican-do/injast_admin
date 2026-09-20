@@ -25,6 +25,12 @@ class DataBackupPage extends StatefulWidget {
 class _DataBackupPageState extends State<DataBackupPage> {
   late final DataBackupService _service;
 
+  bool get _isSuperAdmin {
+    final type =
+        widget.sessionUser?['type_user']?.toString().trim().toLowerCase();
+    return type == 'super_admin';
+  }
+
   DataBackupOverview? _overview;
   BackupProgress? _loadProgress;
   BackupProgress? _backupProgress;
@@ -1073,35 +1079,36 @@ class _DataBackupPageState extends State<DataBackupPage> {
           ),
         ],
       ),
-      BackupCategorySection(
-        number: 4,
-        title: 'حذف اطلاعات',
-        subtitle: 'پاک‌سازی حافظه محلی یا حذف دائم کل اتحادیه',
-        color: const Color(0xFFC62828),
-        icon: FluentIcons.delete_24_regular,
-        helpIntro:
-            'این عملیات‌ها غیرقابل بازگشت هستند. قبل از حذف، در صورت نیاز از بخش ۱ خروجی بگیرید.',
-        helpSteps: const [
-          'حذف از حافظه محلی: فقط دادهٔ ذخیره‌شده روی این دستگاه پاک می‌شود؛ سرور دست‌نخورده می‌ماند.',
-          'حذف کامل اتحادیه: تمام پرونده‌ها و فایل‌ها از سرور و دستگاه برای همیشه حذف می‌شوند.',
-          'حذف کامل سه مرحله تأیید و وارد کردن کد اتحادیه دارد — با دقت ادامه دهید.',
-        ],
-        actions: [
-          BackupActionItem(
-            title: 'حذف از حافظه محلی',
-            subtitle: 'پاک‌سازی پایگاه محلی و فایل‌های کش دستگاه',
-            icon: Icons.delete_sweep_rounded,
-            onTap: _tap(_clearLocalDataFlow),
-          ),
-          BackupActionItem(
-            title: 'حذف کامل اتحادیه',
-            subtitle: 'حذف دائم از سرور + محلی (خطرناک)',
-            icon: Icons.delete_forever_rounded,
-            isDanger: true,
-            onTap: _tap(_purgeUnionCompletelyFlow),
-          ),
-        ],
-      ),
+      if (_isSuperAdmin)
+        BackupCategorySection(
+          number: 4,
+          title: 'حذف اطلاعات',
+          subtitle: 'پاک‌سازی حافظه محلی یا حذف دائم کل اتحادیه',
+          color: const Color(0xFFC62828),
+          icon: FluentIcons.delete_24_regular,
+          helpIntro:
+              'این بخش فقط برای سوپرادمین است. عملیات‌ها غیرقابل بازگشت هستند. قبل از حذف، در صورت نیاز از بخش ۱ خروجی بگیرید.',
+          helpSteps: const [
+            'حذف از حافظه محلی: فقط دادهٔ ذخیره‌شده روی این دستگاه پاک می‌شود؛ سرور دست‌نخورده می‌ماند.',
+            'حذف کامل اتحادیه: تمام پرونده‌ها و فایل‌ها از سرور و دستگاه برای همیشه حذف می‌شوند.',
+            'حذف کامل سه مرحله تأیید و وارد کردن کد اتحادیه دارد — با دقت ادامه دهید.',
+          ],
+          actions: [
+            BackupActionItem(
+              title: 'حذف از حافظه محلی',
+              subtitle: 'پاک‌سازی پایگاه محلی و فایل‌های کش دستگاه',
+              icon: Icons.delete_sweep_rounded,
+              onTap: _tap(_clearLocalDataFlow),
+            ),
+            BackupActionItem(
+              title: 'حذف کامل اتحادیه',
+              subtitle: 'حذف دائم از سرور + محلی (خطرناک)',
+              icon: Icons.delete_forever_rounded,
+              isDanger: true,
+              onTap: _tap(_purgeUnionCompletelyFlow),
+            ),
+          ],
+        ),
     ];
 
     return [

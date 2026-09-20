@@ -234,7 +234,7 @@ class _ValidatedMapImageProvider
 }
 
 Map<String, String> _defaultTileHeaders() => {
-      'User-Agent': 'InjastAdmin/1.0 (desktop; http://injast-web.ir)',
+      'User-Agent': 'InjastAdmin/1.0 (desktop; https://injast-web.ir)',
       'Accept': 'image/png,image/jpeg,image/webp,image/*,*/*',
     };
 

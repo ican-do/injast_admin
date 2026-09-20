@@ -321,71 +321,91 @@ class ParvandeCard extends StatelessWidget {
 
   Widget _debtStrip(Map<String, dynamic> p) {
     final idx = membershipIndex;
-    final useHagh = membershipIndexLoaded && idx != null && idx.hasRecords;
+    final moneyAmount = _moneyValue(p.s('money'));
 
     late final bool hasDebt;
     late final String label;
     late final String amountText;
+    late final Color fg;
+    late final Color bg;
 
-    if (useHagh) {
+    if (membershipIndexLoaded && idx != null && idx.hasRecords) {
       hasDebt = idx.hasPendingDebt;
-      label = hasDebt
-          ? 'وضعیت بدهی: دارای بدهی (حق عضویت)'
-          : 'وضعیت بدهی: تسویه حق عضویت';
-      amountText = '${_formatMoney(idx.pendingRial.toDouble())} ریال';
-    } else if (membershipIndexLoaded &&
-        (idx == null || !idx.hasRecords)) {
+      label = hasDebt ? 'دارای بدهی (حق عضویت)' : 'تسویه حق عضویت';
+      amountText = hasDebt
+          ? '${_formatMoney(idx.pendingRial.toDouble())} ریال'
+          : '${_formatMoney(idx.confirmedRial.toDouble())} ریال';
+      fg = hasDebt ? const Color(0xFFC62828) : const Color(0xFF2E7D32);
+      bg = hasDebt ? const Color(0xFFFFEBEE) : const Color(0xFFE8F5E9);
+    } else if (moneyAmount > 0) {
+      // اگر ایندکس خالی بود یا برای این عضو رکورد نداشت، از فیلد money پرونده
+      hasDebt = true;
+      label = 'دارای بدهی';
+      amountText = '${_formatMoney(moneyAmount)} ریال';
+      fg = const Color(0xFFC62828);
+      bg = const Color(0xFFFFEBEE);
+    } else if (membershipIndexLoaded) {
       hasDebt = false;
-      label = 'وضعیت بدهی: بدون سابقه حق عضویت';
-      amountText = '۰';
+      label = 'بدون سابقه حق عضویت';
+      amountText = '—';
+      fg = const Color(0xFF616161);
+      bg = const Color(0xFFF5F5F5);
     } else {
-      final amount = _moneyValue(p.s('money'));
-      hasDebt = amount > 0;
-      label =
-          hasDebt ? 'وضعیت بدهی: دارای بدهی' : 'وضعیت بدهی: تسویه / بدون بدهی';
-      amountText = _formatMoney(amount);
+      hasDebt = false;
+      label = 'در حال دریافت وضعیت بدهی…';
+      amountText = '…';
+      fg = const Color(0xFF546E7A);
+      bg = const Color(0xFFECEFF1);
     }
 
-    final fg = hasDebt ? const Color(0xFFC62828) : const Color(0xFF2E7D32);
-    final bg = hasDebt ? const Color(0xFFFFEBEE) : const Color(0xFFE8F5E9);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        color: bg,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onMembership,
         borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: fg.withValues(alpha: 0.24)),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            hasDebt ? FluentIcons.money_hand_24_regular : Icons.check_circle,
-            size: 15,
-            color: fg,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: fg.withValues(alpha: 0.28)),
           ),
-          const SizedBox(width: 5),
-          Expanded(
-            child: Text(
-              label,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11.4,
-                fontWeight: FontWeight.w700,
+          child: Row(
+            children: [
+              Icon(
+                hasDebt
+                    ? FluentIcons.money_hand_24_regular
+                    : membershipIndexLoaded
+                        ? Icons.info_outline
+                        : Icons.hourglass_empty,
+                size: 15,
                 color: fg,
               ),
-            ),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  'بدهی: $label',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.4,
+                    fontWeight: FontWeight.w800,
+                    color: fg,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                amountText,
+                style: TextStyle(
+                  fontSize: 11.2,
+                  fontWeight: FontWeight.w800,
+                  color: fg,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Text(
-            amountText,
-            style: TextStyle(
-              fontSize: 11.2,
-              fontWeight: FontWeight.w800,
-              color: fg,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

@@ -21,9 +21,30 @@ class AdminUi {
         ],
       );
 
-  static InputDecoration fieldDecoration(String label, {String? hint, Widget? suffix}) {
+  static InputDecoration fieldDecoration(
+    String label, {
+    String? hint,
+    Widget? suffix,
+    bool required = false,
+  }) {
     return InputDecoration(
-      labelText: label,
+      labelText: required ? null : label,
+      label: required
+          ? Text.rich(
+              TextSpan(
+                text: label,
+                children: const [
+                  TextSpan(
+                    text: ' *',
+                    style: TextStyle(
+                      color: Color(0xFFDC2626),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : null,
       hintText: hint,
       suffixIcon: suffix,
       filled: true,

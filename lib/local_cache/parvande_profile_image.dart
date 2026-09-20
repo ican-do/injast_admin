@@ -26,7 +26,7 @@ class ParvandeProfileImage extends StatelessWidget {
   final double borderRadius;
   final IconData fallbackIcon;
 
-  /// در حالت آنلاین اول URL سرور امتحان می‌شود.
+  /// در حالت آنلاین اول URL سرور امتحان می‌شود؛ اگر نشد کش محلی.
   final bool preferServer;
 
   @override
@@ -92,8 +92,11 @@ class ParvandeProfileImage extends StatelessWidget {
     final raw = parvande.imageProfile.trim();
     final networkUrls = MediaFileUrls.profileImageCandidates(raw);
 
+    // همیشه کش محلی را هم آماده کن — حتی در preferServer —
+    // تا اگر Image.network (SSL / CORS / Referer اصناف) شکست خورد،
+    // مثل صفحه پروانه از فایل محلی استفاده شود.
     File? localFile;
-    if (id.isNotEmpty && !kIsWeb && !preferServer) {
+    if (id.isNotEmpty && !kIsWeb) {
       final local = await LocalImageStore.instance.resolveLocalPath(
         codeCo: codeCo,
         idParvandeh: id,
@@ -127,6 +130,24 @@ class _NetworkImageFallback extends StatefulWidget {
 class _NetworkImageFallbackState extends State<_NetworkImageFallback> {
   int _index = 0;
 
+  static bool _isAsnaf(String url) =>
+      url.contains('apinovin.iranianasnaf.ir') ||
+      url.contains('iranianasnaf.ir');
+
+  Map<String, String>? _headersFor(String url) {
+    if (!_isAsnaf(url)) return null;
+    return const {
+      'Referer': 'https://iranianasnaf.ir/panel/',
+      'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    };
+  }
+
+  void _advance() {
+    if (!mounted) return;
+    setState(() => _index++);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_index >= widget.urls.length) {
@@ -140,15 +161,21 @@ class _NetworkImageFallbackState extends State<_NetworkImageFallback> {
       return widget.fallback;
     }
 
+    final url = widget.urls[_index];
     return Image.network(
-      widget.urls[_index],
+      url,
       fit: BoxFit.cover,
+      headers: _headersFor(url),
       webHtmlElementStrategy: WebHtmlElementStrategy.fallback,
       errorBuilder: (_, __, ___) {
-        if (_index + 1 < widget.urls.length) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _index++);
-          });
+        WidgetsBinding.instance.addPostFrameCallback((_) => _advance());
+        // تا فریم بعد: اگر کش محلی هست همان را نشان بده (مثل پروانه)
+        if (widget.localFile != null) {
+          return Image.file(
+            widget.localFile!,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => widget.fallback,
+          );
         }
         return widget.fallback;
       },

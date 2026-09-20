@@ -115,6 +115,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
   bool _insideRegion = true;
   Map<String, HaghOzviatMemberIndex> _haghIndex = {};
   bool _haghIndexLoaded = false;
+  int _markerKeyCounter = 0;
 
   bool get _canEditParvande => ParvandePermissions.canEditParvande(
         role: widget.currentUserType ?? widget.currentUserRole,
@@ -243,14 +244,13 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     return double.tryParse(raw) ?? 0;
   }
 
-  /// همان منطق کارت پرونده و دیالگ حق عضویت: `pending_rial` از index سرور.
+  /// همان منطق کارت پرونده: اول حق عضویت، سپس فیلد money پرونده.
   bool _hasMemberDebt(Map<String, dynamic> item) {
     if (_haghIndexLoaded) {
       final idx = _haghFor(item);
       if (idx != null && idx.hasRecords) {
         return idx.hasPendingDebt;
       }
-      return false;
     }
     return _moneyValue(item) > 0;
   }
@@ -462,28 +462,53 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     final markers = <Marker>[];
     final validRows =
         _filteredViewportRows.where((e) => e.hasLocation).toList();
-    _totalPoints = validRows.length;
-    _loadedPoints = 0;
 
+    // گروه‌بندی پرونده‌های هم‌مختصات (مثل injast_v3) تا روی هم نمانند
+    final groups = <String, List<Map<String, dynamic>>>{};
     for (final item in validRows) {
       final lat = double.tryParse(item.lat);
       final lng = double.tryParse(item.lng);
       if (lat == null || lng == null) continue;
-      final highlighted = item.idParvandeh == _highlightedParvandeId;
+      final key = '${lat.toStringAsFixed(6)}_${lng.toStringAsFixed(6)}';
+      groups.putIfAbsent(key, () => <Map<String, dynamic>>[]).add(item);
+    }
+
+    _totalPoints = groups.length;
+    _loadedPoints = 0;
+
+    for (final entry in groups.entries) {
+      final items = entry.value;
+      final first = items.first;
+      final lat = double.tryParse(first.lat);
+      final lng = double.tryParse(first.lng);
+      if (lat == null || lng == null) continue;
+
+      final count = items.length;
+      final ids = items.map((e) => e.idParvandeh).toSet();
+      final highlighted = _highlightedParvandeId != null &&
+          ids.contains(_highlightedParvandeId);
+      final hasEditLoc =
+          items.any((e) => e.s('edit_location') == '1');
+
       markers.add(
         Marker(
-          width: highlighted ? 84 : 56,
-          height: highlighted ? 98 : 66,
+          width: highlighted || count > 1 ? 84 : 56,
+          height: highlighted || count > 1 ? 98 : 66,
           point: LatLng(lat, lng),
           child: GestureDetector(
             onTap: () {
-              setState(() => _highlightedParvandeId = item.idParvandeh);
-              _showParvandeCardSheet(item);
+              setState(() => _highlightedParvandeId = first.idParvandeh);
+              if (items.length == 1) {
+                _showParvandeCardSheet(items.first);
+              } else {
+                _showGroupedParvandeSheet(items);
+              }
             },
             child: _InspectionMarker(
-              color: _markerColorForVaziyat(item.vaziyatCode),
-              editedLocation: item.s('edit_location') == '1',
+              color: _markerColorForVaziyat(first.vaziyatCode),
+              editedLocation: hasEditLoc,
               highlighted: highlighted,
+              stackCount: count,
             ),
           ),
         ),
@@ -502,6 +527,7 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
 
     if (mounted) {
       setState(() {
+        _markerKeyCounter++;
         _markers = markers;
         _progress = markers.isEmpty ? 0.84 : 0.94;
         _loadingText = markers.isEmpty
@@ -512,6 +538,150 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     if (autoCenter && !_didAutoCenter && markers.isNotEmpty) {
       _autoCenterOnRows(validRows);
     }
+  }
+
+  Future<void> _showGroupedParvandeSheet(
+    List<Map<String, dynamic>> items,
+  ) async {
+    final selected = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.72,
+            ),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF4F7FB),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 44,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade400,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${items.length} پرونده در این موقعیت',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: items.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) {
+                      final p = items[i];
+                      return Material(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => Navigator.of(ctx).pop(p),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: const Color(0xFFDDE5EF)),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 10,
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: _markerColorForVaziyat(p.vaziyatCode),
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        p.storeName.isEmpty
+                                            ? 'بدون نام واحد'
+                                            : p.storeName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 13.5,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        p.fullName.isEmpty ? '—' : p.fullName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                      if (p.raste.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          p.raste,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 11.5,
+                                            color: Colors.grey.shade600,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.chevron_left,
+                                  color: Colors.grey.shade500,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (selected == null || !mounted) return;
+    setState(() => _highlightedParvandeId = selected.idParvandeh);
+    await _showParvandeCardSheet(selected);
   }
 
   void _autoCenterOnRows(List<Map<String, dynamic>> rows) {
@@ -1881,12 +2051,20 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
               children: [
                 const LegacyBazrasiTileLayer(),
                 MarkerClusterLayerWidget(
+                  key: ValueKey('markers_$_markerKeyCounter'),
                   options: MarkerClusterLayerOptions(
                     markers: _markers,
-                    maxClusterRadius: 60,
+                    maxClusterRadius: 45,
                     size: const Size(48, 48),
                     alignment: Alignment.center,
                     padding: const EdgeInsets.all(48),
+                    zoomToBoundsOnClick: true,
+                    spiderfyCluster: true,
+                    polygonOptions: const PolygonOptions(
+                      borderColor: Color(0xFF2E7D32),
+                      color: Color(0x22000000),
+                      borderStrokeWidth: 3,
+                    ),
                     builder: (context, markers) {
                       return Container(
                         decoration: BoxDecoration(
@@ -2050,11 +2228,13 @@ class _InspectionMarker extends StatelessWidget {
     required this.color,
     required this.editedLocation,
     required this.highlighted,
+    this.stackCount = 1,
   });
 
   final Color color;
   final bool editedLocation;
   final bool highlighted;
+  final int stackCount;
 
   @override
   Widget build(BuildContext context) {
@@ -2104,6 +2284,37 @@ class _InspectionMarker extends StatelessWidget {
           color: Colors.black.withValues(alpha: highlighted ? 0.28 : 0.22),
         ),
         Icon(Icons.location_on, size: innerPinSize, color: color),
+        if (stackCount > 1)
+          Positioned(
+            top: 0,
+            right: 2,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              constraints: const BoxConstraints(minWidth: 18),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1565C0),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Colors.white, width: 1.5),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x33000000),
+                    blurRadius: 4,
+                    offset: Offset(0, 1),
+                  ),
+                ],
+              ),
+              child: Text(
+                '$stackCount',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  height: 1.2,
+                ),
+              ),
+            ),
+          ),
         if (highlighted)
           Positioned(
             top: -4,
