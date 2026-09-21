@@ -70,6 +70,7 @@ class PermissionCatalog {
     PermissionNode(label: 'بازرسی', children: [
       PermissionNode(key: 'create_bazrasi', label: 'ثبت'),
       PermissionNode(key: 'view_bazrasi_history', label: 'سوابق'),
+      PermissionNode(key: 'view_inspection_archive', label: 'آرشیو بازرسی‌ها'),
     ]),
     PermissionNode(label: 'اعضاء اتحادیه (عملیات پرونده)', children: [
       PermissionNode(key: 'member_create_parvande', label: '+ پرونده جدید'),

@@ -13,6 +13,7 @@ import 'package:injast_admin/features/benefits/manage_benefits_page.dart';
 import 'package:injast_admin/features/calendar/my_calendar_page.dart';
 import 'package:injast_admin/features/laws/manage_laws_page.dart';
 import 'package:injast_admin/features/news/manage_news_page.dart';
+import 'package:injast_admin/features/inspections/inspection_archive_page.dart';
 import 'package:injast_admin/features/parvande_new/parvande_register_mode.dart';
 import 'package:injast_admin/features/permissions/manage_access_page.dart';
 import 'package:injast_admin/features/personnel/manage_personnel_page.dart';
@@ -394,6 +395,10 @@ class _PanelItemTile extends StatelessWidget {
                 isSuperAdmin: typeUser?.trim().toLowerCase() == 'super_admin',
                 unionInfo: _UserContext.unionOf(context),
               ));
+              return;
+            case 'inspection_archive':
+              if (!requireCodeCo()) return;
+              await push(InspectionArchivePage(codeCo: codeCo));
               return;
             case 'inspection_map':
               if (!requireCodeCo()) return;
@@ -890,6 +895,12 @@ const List<_PanelCategory> _panelCategories = [
           backgroundColor: Color(0xFFE3F2FD),
           iconColor: Color(0xFF1565C0),
           actionKey: 'inspection_map'),
+      _PanelItem(
+          label: 'آرشیو بازرسی‌ها',
+          icon: FluentIcons.clipboard_search_24_regular,
+          backgroundColor: Color(0xFFE8EAF6),
+          iconColor: Color(0xFF283593),
+          actionKey: 'inspection_archive'),
     ],
   ),
   _PanelCategory(

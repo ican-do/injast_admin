@@ -40,6 +40,7 @@ dependencies:
   uuid: ^4.5.1
   shamsi_date: ^1.1.1
   persian_datetimepickers: ^1.0.2+1
+  persian_fonts: ^1.0.6
   fluentui_system_icons: ^1.1.229
   url_launcher: ^6.3.1
   flutter_inappwebview: ^6.1.5
