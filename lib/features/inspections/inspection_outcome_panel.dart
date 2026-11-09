@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:injast_admin/features/inspections/inspection_archive_api.dart';
 import 'package:injast_admin/features/shared/admin_ui.dart';
+import 'package:injast_admin/features/shekayat/compat/permissions.dart';
 import 'package:injast_admin/file_management/jalali_date_util.dart';
 import 'package:persian_datetimepickers/persian_datetimepickers.dart';
 
@@ -81,10 +82,11 @@ class _InspectionOutcomePanelState extends State<InspectionOutcomePanel> {
                   ),
                 ),
               ),
-              FilledButton.tonal(
-                onPressed: _edit,
-                child: Text(_outcome == null ? 'ثبت وضعیت' : 'ویرایش وضعیت'),
-              ),
+              if (Permissions.canSetInspectionOutcome())
+                FilledButton.tonal(
+                  onPressed: _edit,
+                  child: Text(_outcome == null ? 'ثبت وضعیت' : 'ویرایش وضعیت'),
+                ),
             ],
           ),
           const SizedBox(height: 10),

@@ -40,16 +40,16 @@ class _TrashSheetState extends State<TrashSheet> {
 
   List<Map<String, dynamic>> get _filtered {
     if (_q.trim().isEmpty) return _items;
-    final q = _q.toLowerCase();
+    final q = foldPersianKaf(_q).toLowerCase();
     return _items.where((m) {
-      final bag = [
+      final bag = foldPersianKaf([
         m.s('name_admin'),
         m.s('family_admin'),
         m.storeName,
         m.mob,
         m.codeMeli,
         m.numParvande,
-      ].join(' ').toLowerCase();
+      ].join(' ')).toLowerCase();
       return bag.contains(q);
     }).toList();
   }

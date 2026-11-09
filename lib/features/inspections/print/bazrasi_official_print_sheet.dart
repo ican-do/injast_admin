@@ -170,6 +170,9 @@ class _A4Page extends StatelessWidget {
     final inspector = _s(data['inspector_name']);
     final sigPath = _s(data['signature_png_path']);
     final sigUrl = sigPath.isEmpty ? '' : getStaticFileUrl(sigPath);
+    final inspectorSig = _s(data['inspector_signature_png_path']);
+    final inspectorSigUrl =
+        inspectorSig.isEmpty ? '' : getStaticFileUrl(inspectorSig);
     final reasons = _reasons();
     final notes = _notes();
     final docNo = _s(_p['num_parvande_store']);
@@ -213,6 +216,7 @@ class _A4Page extends StatelessWidget {
                       nationalId: _s(_p['code_meli_admin']),
                       phone: _phone(),
                       postal: _s(_p['code_posti_store']),
+                      formData: data,
                     ),
                     const SizedBox(height: 14),
                     Text(
@@ -254,6 +258,7 @@ class _A4Page extends StatelessWidget {
                           child: _SignBlock(
                             caption: 'امضاء بازرس',
                             name: inspector,
+                            imageUrl: inspectorSigUrl,
                           ),
                         ),
                         Expanded(
@@ -300,6 +305,7 @@ class _HeaderCard extends StatelessWidget {
     required this.nationalId,
     required this.phone,
     required this.postal,
+    required this.formData,
   });
 
   final String union;
@@ -312,6 +318,7 @@ class _HeaderCard extends StatelessWidget {
   final String nationalId;
   final String phone;
   final String postal;
+  final Map<String, dynamic> formData;
 
   @override
   Widget build(BuildContext context) {
@@ -402,19 +409,7 @@ class _HeaderCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: _logoRing, width: 1.4),
-                      ),
-                      child: const Icon(
-                        Icons.account_balance,
-                        color: _logoRing,
-                        size: 22,
-                      ),
-                    ),
+                    UnionPrintLogo(data: formData, size: 44, color: _logoRing),
                   ],
                 ),
               ),
@@ -656,7 +651,7 @@ class _SignBlock extends StatelessWidget {
     return Column(
       children: [
         SizedBox(
-          height: 72,
+          height: 300,
           child: imageUrl.isEmpty
               ? const SizedBox.shrink()
               : Image.network(imageUrl, fit: BoxFit.contain),

@@ -373,11 +373,11 @@ class _FileManagementPageState extends State<FileManagementPage> {
   }
 
   List<Map<String, dynamic>> get _visible {
-    final q = _searchCtrl.text.trim().toLowerCase();
+    final q = foldPersianKaf(_searchCtrl.text.trim()).toLowerCase();
     var filtered = _filters.apply(_baseByFilter);
     if (q.isEmpty) return filtered;
     return filtered.where((p) {
-      final bag = [
+      final bag = foldPersianKaf([
         p.s('name_admin'),
         p.s('family_admin'),
         p.storeName,
@@ -387,7 +387,7 @@ class _FileManagementPageState extends State<FileManagementPage> {
         p.codePosti,
         p.numParvande,
         p.shenase,
-      ].join(' ').toLowerCase();
+      ].join(' ')).toLowerCase();
       return bag.contains(q);
     }).toList();
   }
@@ -649,15 +649,21 @@ class _FileManagementPageState extends State<FileManagementPage> {
     if (ok != true) return false;
     try {
       await _api.deleteForever(p.idParvandeh);
-      if (p.isInLocalCache) {
-        await ParvandeLocalRepository.instance
-            .deleteRecord(widget.codeCo, p.idParvandeh);
-      }
+      await ParvandeLocalRepository.instance
+          .deleteRecord(widget.codeCo, p.idParvandeh);
       if (!mounted) return true;
+      setState(() {
+        _all.removeWhere((e) => e.idParvandeh == p.idParvandeh);
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('پرونده برای همیشه حذف شد.')),
       );
       await _load();
+      if (_all.any((e) => e.idParvandeh == p.idParvandeh)) {
+        throw Exception(
+          'پرونده هنوز روی سرور موجود است؛ حذف کامل انجام نشد.',
+        );
+      }
       return true;
     } catch (e) {
       if (!mounted) return false;

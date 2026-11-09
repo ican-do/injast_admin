@@ -395,7 +395,10 @@ class _ParvandeFullEditPageState extends State<ParvandeFullEditPage> {
                           title: 'وضعیت پرونده',
                           children: [
                             _dropdown('وضعیت *', _vaziyatLabel, ParvandeVaziyat.options, (v) => _vaziyatLabel = v),
-                            _readOnlyField('شماره پرونده', _numParvandeCtrl),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _field(_numParvandeCtrl, 'شماره پرونده'),
+                            ),
                           ],
                         ),
                         _sectionCard(
@@ -614,17 +617,6 @@ class _ParvandeFullEditPageState extends State<ParvandeFullEditPage> {
       keyboardType: digitsOnly ? TextInputType.number : null,
       inputFormatters: digitsOnly ? [FilteringTextInputFormatter.digitsOnly] : null,
       decoration: _decoration(label),
-    );
-  }
-
-  Widget _readOnlyField(String label, TextEditingController c) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: TextField(
-        controller: c,
-        readOnly: true,
-        decoration: _decoration(label, readOnly: true),
-      ),
     );
   }
 

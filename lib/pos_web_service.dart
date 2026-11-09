@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:injast_admin/api_token.dart';
+import 'package:injast_admin/features/shekayat/compat/permissions.dart';
+import 'package:injast_admin/features/shekayat/compat/shekayat_basic.dart';
 import 'package:injast_admin/import_sync/asnaf_recovery_store.dart';
 import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/local_cache/offline_session_store.dart';
@@ -110,6 +112,7 @@ class PosWebService {
 
       await _loadUnionInfo();
       await _loadMemberStats();
+      await _bindPermissions();
       if (_sessionUser != null) {
         await OfflineSessionStore().saveSession(
           user: _sessionUser!,
@@ -187,6 +190,8 @@ class PosWebService {
     _sessionUser = null;
     _unionInfo = null;
     _memberStats = null;
+    bindShekayatSession(codeCo: '', user: null);
+    Permissions.resetToRoleTemplate();
     final p = await SharedPreferences.getInstance();
     // پاک‌سازی داده‌های حساس/موقت مرتبط با بازیابی اسناف در زمان خروج کاربر.
     await p.remove('asnaf_jwt_hidden_v1');
@@ -233,6 +238,15 @@ class PosWebService {
     _sessionUser = user;
     _unionInfo = saved.unionInfo;
     _memberStats = null;
+    await _bindPermissions();
     return true;
+  }
+
+  Future<void> _bindPermissions() async {
+    bindShekayatSession(
+      codeCo: _sessionUser?['code_co']?.toString() ?? '',
+      user: _sessionUser,
+    );
+    await Permissions.loadForCurrentUser();
   }
 }

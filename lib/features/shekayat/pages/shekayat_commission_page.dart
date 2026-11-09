@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:injast_admin/features/shekayat/compat/class_controler.dart';
 import 'package:injast_admin/features/shekayat/compat/screen_util_shim.dart';
 import 'package:injast_admin/features/shekayat/shekayat_api.dart';
 import 'package:injast_admin/features/shekayat/shekayat_constants.dart';
@@ -54,12 +55,12 @@ class _ShekayatCommissionPageState extends State<ShekayatCommissionPage> {
   }
 
   List<dynamic> get _filtered {
-    final q = _searchCtrl.text.trim().toLowerCase();
+    final q = foldPersianKaf(_searchCtrl.text.trim()).toLowerCase();
     if (q.isEmpty) return _sessions;
     return _sessions.where((r) {
       final m = r as Map;
       return [m['session_date'], m['session_time'], m['description']]
-          .any((f) => (f?.toString().toLowerCase() ?? '').contains(q));
+          .any((f) => foldPersianKaf(f?.toString() ?? '').toLowerCase().contains(q));
     }).toList();
   }
 

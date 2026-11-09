@@ -6,6 +6,11 @@ import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/local_cache/sync_status.dart';
 import 'package:injast_admin/server_config.dart';
 
+/// کاف عربی (ك) و کاف فارسی (ک) در جستجو یکی حساب می‌شوند.
+String foldPersianKaf(String input) {
+  return input.replaceAll('ك', 'ک').replaceAll('ڪ', 'ک');
+}
+
 /// لایهٔ API برای ماژول مدیریت پرونده‌ها (در فاز اول فقط ۳ endpoint)
 class ParvandeApi {
   ParvandeApi._();
@@ -97,14 +102,33 @@ class ParvandeApi {
     }
   }
 
-  /// حذف دائم پرونده
   Future<void> deleteForever(String idParvandeh) async {
     final uri = Uri.parse(
       getApiUrl('delete/delete_parvande/${Uri.encodeComponent(idParvandeh)}'),
     );
     final res = await http.get(uri);
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('خطا در حذف دائم پرونده (${res.statusCode})');
+      String msg = 'خطا در حذف دائم پرونده (${res.statusCode})';
+      try {
+        final body = jsonDecode(res.body);
+        if (body is Map && (body['message']?.toString().isNotEmpty ?? false)) {
+          msg = body['message'].toString();
+        }
+      } catch (_) {}
+      throw Exception(msg);
+    }
+    final raw = res.body.trim();
+    if (raw.startsWith('{')) {
+      final body = jsonDecode(raw);
+      if (body is Map) {
+        if (body['success'] == false) {
+          throw Exception(body['message']?.toString() ?? 'حذف پرونده انجام نشد');
+        }
+        final deleted = int.tryParse('${body['deleted'] ?? 0}') ?? 0;
+        if (body.containsKey('deleted') && deleted <= 0) {
+          throw Exception('پرونده از سرور حذف نشد');
+        }
+      }
     }
   }
 
@@ -169,6 +193,43 @@ class ParvandeApi {
         .toList();
     names.sort();
     return names;
+  }
+
+  /// وضعیت و تاریخ صدور/انقضا را با شناسهٔ صنفی می‌نویسد.
+  /// بدنهٔ JSON است تا اسلشِ «فعال/صادر شده» و طول آدرس، درخواست را نشکند.
+  Future<Map<String, dynamic>> updateParvandeImportFields({
+    required String codeCo,
+    required String shenase,
+    required String vaziyatStore,
+    required String lblVaziyatStore,
+    required String dateSodor,
+    required String dateExp,
+  }) async {
+    final uri = Uri.parse(getApiUrl('update/update_parvande_import'));
+    final res = await http
+        .post(
+          uri,
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+          body: jsonEncode({
+            'code_co': codeCo,
+            'shenase': shenase,
+            'vaziyat_store': vaziyatStore,
+            'lbl_vaziyat_store': lblVaziyatStore,
+            'date_sodor': dateSodor,
+            'date_exp': dateExp,
+          }),
+        )
+        .timeout(const Duration(seconds: 40));
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception(
+        'به‌روزرسانی پرونده ناموفق بود (${res.statusCode})',
+      );
+    }
+    final decoded = jsonDecode(res.body);
+    if (decoded is! Map) {
+      throw Exception('پاسخ به‌روزرسانی پرونده نامعتبر است');
+    }
+    return Map<String, dynamic>.from(decoded);
   }
 
   /// بروزرسانی پرونده — همان updateParvandeh سرور
@@ -251,63 +312,135 @@ class ParvandeApi {
       return p.s(key);
     }
 
-    String seg(String key) => _pathParam(v(key));
-    final moneyRaw = v('money');
-    final money = moneyRaw.isEmpty ? '0' : _pathParam(moneyRaw);
+    String plain(String key) {
+      final text = v(key).trim();
+      return text.isEmpty ? '0' : text;
+    }
 
-    final parts = [
-      seg('name_admin'),
-      seg('family_admin'),
-      seg('sex_admin'),
-      seg('sadere_admin'),
-      seg('tavalod_admin'),
-      seg('name_pedar_admin'),
-      seg('num_shenasname_admin'),
-      seg('code_meli_admin'),
-      seg('mob_admin'),
-      seg('tel_admin'),
-      seg('madrak_admin'),
-      seg('din_admin'),
-      seg('sarbazi_admin'),
-      seg('taahol_admin'),
-      seg('name_store'),
-      seg('shenase_store'),
-      seg('raste_store'),
-      seg('masahat_store'),
-      seg('type_melki_store'),
-      _pathParam(address ?? v('address_store')),
-      seg('code_posti_store'),
-      seg('mantaghe_store'),
-      _pathParam(lat ?? v('lat_store')),
-      _pathParam(lng ?? v('long_store')),
-      seg('state_store'),
-      seg('city_store'),
-      seg('date_sodor_store'),
-      seg('date_exp_store'),
-      seg('date_etebar_store'),
-      seg('daraje_store'),
-      seg('num_parvande_store'),
-      seg('vaziyat_store'),
-      seg('lbl_vaziyat_store'),
-      seg('num_person_store'),
-      seg('caption_parvande'),
-      money,
-      _pathParam(p.idParvandeh),
-    ];
+    final fields = <String, String>{
+      'name_admin': plain('name_admin'),
+      'family_admin': plain('family_admin'),
+      'sex_admin': plain('sex_admin'),
+      'sadere_admin': plain('sadere_admin'),
+      'tavalod_admin': plain('tavalod_admin'),
+      'name_pedar_admin': plain('name_pedar_admin'),
+      'num_shenasname_admin': plain('num_shenasname_admin'),
+      'code_meli_admin': plain('code_meli_admin'),
+      'mob_admin': plain('mob_admin'),
+      'tel_admin': plain('tel_admin'),
+      'madrak_admin': plain('madrak_admin'),
+      'din_admin': plain('din_admin'),
+      'sarbazi_admin': plain('sarbazi_admin'),
+      'taahol_admin': plain('taahol_admin'),
+      'name_store': plain('name_store'),
+      'shenase_store': plain('shenase_store'),
+      'raste_store': plain('raste_store'),
+      'masahat_store': plain('masahat_store'),
+      'type_melki_store': plain('type_melki_store'),
+      'address_store': (address ?? v('address_store')).trim().isEmpty
+          ? '0'
+          : (address ?? v('address_store')).trim(),
+      'code_posti_store': plain('code_posti_store'),
+      'mantaghe_store': plain('mantaghe_store'),
+      'lat_store': (lat ?? v('lat_store')).trim().isEmpty
+          ? '0'
+          : (lat ?? v('lat_store')).trim(),
+      'long_store': (lng ?? v('long_store')).trim().isEmpty
+          ? '0'
+          : (lng ?? v('long_store')).trim(),
+      'state_store': plain('state_store'),
+      'city_store': plain('city_store'),
+      'date_sodor_store': plain('date_sodor_store'),
+      'date_exp_store': plain('date_exp_store'),
+      'date_etebar_store': plain('date_etebar_store'),
+      'daraje_store': plain('daraje_store'),
+      'num_parvande_store': plain('num_parvande_store'),
+      'vaziyat_store': plain('vaziyat_store'),
+      'lbl_vaziyat_store': plain('lbl_vaziyat_store'),
+      'num_person_store': plain('num_person_store'),
+      'caption_parvande': plain('caption_parvande'),
+      'money': plain('money'),
+      'id_parvande': p.idParvandeh.trim().isEmpty ? '0' : p.idParvandeh.trim(),
+    };
 
-    final uri =
-        Uri.parse(getApiUrl('update/update_parvandeh/${parts.join('/')}'));
+    String segField(String key) => _pathParam(fields[key] ?? '0');
+
+    List<String> legacySegments({required bool withMoney}) {
+      const base = [
+        'name_admin',
+        'family_admin',
+        'sex_admin',
+        'sadere_admin',
+        'tavalod_admin',
+        'name_pedar_admin',
+        'num_shenasname_admin',
+        'code_meli_admin',
+        'mob_admin',
+        'tel_admin',
+        'madrak_admin',
+        'din_admin',
+        'sarbazi_admin',
+        'taahol_admin',
+        'name_store',
+        'shenase_store',
+        'raste_store',
+        'masahat_store',
+        'type_melki_store',
+        'address_store',
+        'code_posti_store',
+        'mantaghe_store',
+        'lat_store',
+        'long_store',
+        'state_store',
+        'city_store',
+        'date_sodor_store',
+        'date_exp_store',
+        'date_etebar_store',
+        'daraje_store',
+        'num_parvande_store',
+        'vaziyat_store',
+        'lbl_vaziyat_store',
+        'num_person_store',
+        'caption_parvande',
+      ];
+      final keys = [...base, if (withMoney) 'money', 'id_parvande'];
+      return keys.map(segField).toList();
+    }
+
+    Future<http.Response> getLegacy() async {
+      http.Response? last;
+      for (final withMoney in [false, true]) {
+        final uri = Uri.parse(
+          getApiUrl(
+            'update/update_parvandeh/${legacySegments(withMoney: withMoney).join('/')}',
+          ),
+        );
+        last = await http.get(uri).timeout(const Duration(seconds: 120));
+        if (last.statusCode != 404) return last;
+      }
+      return last!;
+    }
+
     if (verboseLog) {
       debugPrint(
-        '[csv_import_update] HTTP GET update_parvandeh | '
-        'id=${p.idParvandeh} | shenase=${v('shenase_store')} | '
-        'date_sodor=${v('date_sodor_store')} | '
-        'vaziyat=${v('vaziyat_store')}/${v('lbl_vaziyat_store')} | '
-        'date_exp=${v('date_exp_store')}',
+        '[csv_import_update] update_parvandeh | id=${p.idParvandeh} | '
+        'shenase=${fields['shenase_store']} | vaziyat=${fields['vaziyat_store']}',
       );
-      debugPrint('[csv_import_update] URL: $uri');
     }
-    final res = await http.get(uri).timeout(const Duration(seconds: 120));
+
+    var res = await http
+        .post(
+          Uri.parse(getApiUrl('update/update_parvandeh')),
+          body: fields,
+        )
+        .timeout(const Duration(seconds: 120));
+    if (res.statusCode == 404) {
+      if (verboseLog) {
+        debugPrint('[csv_import_update] POST 404 — fallback to legacy GET');
+      }
+      res = await getLegacy();
+    }
+
     if (verboseLog) {
       debugPrint(
         '[csv_import_update] HTTP RESP ${res.statusCode} | '
@@ -328,7 +461,7 @@ class ParvandeApi {
     return ParvandeUpdateResult(
       statusCode: res.statusCode,
       body: res.body.trim(),
-      requestUri: uri.toString(),
+      requestUri: getApiUrl('update/update_parvandeh'),
     );
   }
 

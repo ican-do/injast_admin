@@ -8,6 +8,7 @@ import 'package:injast_admin/features/parvande_new/place_api.dart';
 import 'package:injast_admin/features/parvande_new/searchable_place_field.dart';
 import 'package:injast_admin/features/shared/admin_ui.dart';
 import 'package:injast_admin/file_management/map_ir_geocoding.dart';
+import 'package:injast_admin/file_management/parvande_api.dart';
 import 'package:injast_admin/file_management/province_geo_fence.dart';
 import 'package:injast_admin/server_config.dart';
 import 'package:persian_datetimepickers/persian_datetimepickers.dart';
@@ -115,6 +116,34 @@ class _NewParvandePageState extends State<NewParvandePage> {
     super.initState();
     _loadRaste();
     _loadStates().then((_) => _applyUnionPlaceDefaults());
+    _fillNextParvandeNumber();
+  }
+
+  /// شماره پروندهٔ پیشنهادی = بزرگ‌ترین شمارهٔ عددی موجود + ۱. اگر کاربر قبلاً چیزی نوشته باشد عوض نمی‌شود.
+  Future<void> _fillNextParvandeNumber() async {
+    try {
+      final rows = await ParvandeApi.instance.fetchAll(widget.codeCo);
+      var maxNum = 0;
+      for (final row in rows) {
+        final raw = _englishDigits(row['num_parvande_store']?.toString() ?? '').trim();
+        final n = int.tryParse(raw);
+        if (n != null && n > maxNum) maxNum = n;
+      }
+      final ctrl = _c('num_parvande_store');
+      if (!mounted || ctrl.text.trim().isNotEmpty) return;
+      ctrl.text = '${maxNum + 1}';
+      setState(() {});
+    } catch (_) {}
+  }
+
+  String _englishDigits(String input) {
+    const fa = '۰۱۲۳۴۵۶۷۸۹';
+    const ar = '٠١٢٣٤٥٦٧٨٩';
+    var out = input;
+    for (var i = 0; i < 10; i++) {
+      out = out.replaceAll(fa[i], '$i').replaceAll(ar[i], '$i');
+    }
+    return out;
   }
 
   @override
@@ -517,6 +546,8 @@ class _NewParvandePageState extends State<NewParvandePage> {
 
   List<Widget> _quickFields() => [
         _section('ثبت سریع پرونده', Icons.flash_on_outlined, [
+          _field('num_parvande_store', 'شماره پرونده',
+              keyboard: TextInputType.number),
           _vaziyatField(),
           _field('name_admin', 'نام', required: true),
           _field('family_admin', 'نام خانوادگی', required: true),

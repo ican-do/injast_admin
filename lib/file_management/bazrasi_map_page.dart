@@ -157,13 +157,13 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
       );
 
   List<Map<String, dynamic>> get _searchResults {
-    final q = _searchCtrl.text.trim().toLowerCase();
+    final q = foldPersianKaf(_searchCtrl.text.trim()).toLowerCase();
     if (q.isEmpty) return const [];
     return _filteredSearchPool
         .where((item) {
-          final bag = _searchFields
+          final bag = foldPersianKaf(_searchFields
               .map((f) => item[f]?.toString().trim() ?? '')
-              .join(' ')
+              .join(' '))
               .toLowerCase();
           return bag.contains(q);
         })
@@ -1235,11 +1235,13 @@ class _BazrasiMapPageState extends State<BazrasiMapPage> {
     if (ok != true) return false;
     try {
       await _api.deleteForever(p.idParvandeh);
-      if (p.isInLocalCache) {
-        await ParvandeLocalRepository.instance
-            .deleteRecord(widget.codeCo, p.idParvandeh);
-      }
+      await ParvandeLocalRepository.instance
+          .deleteRecord(widget.codeCo, p.idParvandeh);
       if (!mounted) return true;
+      setState(() {
+        _rows.removeWhere((e) => e.idParvandeh == p.idParvandeh);
+        _searchPool.removeWhere((e) => e.idParvandeh == p.idParvandeh);
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('پرونده برای همیشه حذف شد.')),
       );

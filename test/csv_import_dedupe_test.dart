@@ -88,21 +88,43 @@ void main() {
     expect(result.removedCount, 3);
   });
 
-  test('case3: all revoked keeps latest issue date', () {
+  test('case3: all revoked keeps latest issue date within the same status', () {
     final result = CsvImportDedupe.apply([
       _row(index: 1, shenase: '300', status: 'ابطال', issueDate: '1395/01/01'),
-      _row(
-        index: 2,
-        shenase: '300',
-        status: 'ابطال متقاضی',
-        issueDate: '1401/12/01',
-      ),
       _row(index: 3, shenase: '300', status: 'ابطال', issueDate: '1400/06/15'),
     ]);
 
     expect(result.kept, hasLength(1));
-    expect(result.kept.single.rowIndex, 2);
-    expect(result.removedCount, 2);
+    expect(result.kept.single.rowIndex, 3);
+    expect(result.removedCount, 1);
+  });
+
+  test('ابطال متقاضی always beats ابطال even when ابطال is newer', () {
+    final result = CsvImportDedupe.apply([
+      _row(
+        index: 1,
+        shenase: '301',
+        status: 'ابطال متقاضی',
+        issueDate: '1390/01/01',
+      ),
+      _row(index: 2, shenase: '301', status: 'ابطال', issueDate: '1404/01/01'),
+    ]);
+
+    expect(result.kept.single.rowIndex, 1);
+  });
+
+  test('equal issue date still keeps ابطال متقاضی over ابطال', () {
+    final result = CsvImportDedupe.apply([
+      _row(index: 1, shenase: '302', status: 'ابطال', issueDate: '1394/08/17'),
+      _row(
+        index: 4,
+        shenase: '302',
+        status: 'ابطال متقاضی',
+        issueDate: '1394/08/17',
+      ),
+    ]);
+
+    expect(result.kept.single.rowIndex, 4);
   });
 
   test('different shenase codes are all kept', () {

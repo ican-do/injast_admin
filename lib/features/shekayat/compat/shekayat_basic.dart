@@ -30,7 +30,5 @@ void bindShekayatSession({
   Map<String, dynamic>? user,
 }) {
   code_co = codeCo;
-  if (user != null) {
-    list_user = [user];
-  }
+  list_user = user == null ? [] : [user];
 }

@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:injast_admin/features/inspections/print/print_bridge.dart';
 import 'package:persian_fonts/persian_fonts.dart';
 
 /// نمایش فرم بر اساس قالب JSON (A4/A5، فونت، مناطق و بایند فیلدها).
@@ -281,7 +282,7 @@ class _PrintCtx {
       case 'form_name':
         return _str(data['form_name']);
       case 'union_name':
-        return _str(data['union_name']);
+        return '';
       case 'inspector_name':
         return _str(data['inspector_name']);
       case 'created_at':
@@ -644,20 +645,11 @@ class _HeaderCard extends StatelessWidget {
                 ),
               ),
               SizedBox(width: ctx.scale.mm(3)),
-              Container(
-                width: ctx.scale.mm(16),
-                height: ctx.scale.mm(16),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: ctx.color('logo_ring', const Color(0xFF2B6CB0)),
-                  ),
-                ),
-                child: Icon(
-                  Icons.account_balance,
-                  size: ctx.scale.mm(8),
-                  color: ctx.color('logo_ring', const Color(0xFF2B6CB0)),
-                ),
+              UnionPrintLogo(
+                data: ctx.data,
+                size: ctx.scale.mm(16),
+                fileUrl: ctx.fileUrl,
+                color: ctx.color('logo_ring', const Color(0xFF2B6CB0)),
               ),
             ],
           ),
@@ -1007,7 +999,19 @@ class _Signs extends StatelessWidget {
           Expanded(
             child: Column(
               children: [
-                SizedBox(height: ctx.scale.mm(14)),
+                SizedBox(
+                  height: ctx.scale.mm(72),
+                  child: (ctx.data['inspector_signature_png_path']?.toString() ?? '')
+                          .trim()
+                          .isEmpty
+                      ? const SizedBox.shrink()
+                      : Image.network(
+                          (ctx.fileUrl ?? (p) => p)(
+                            ctx.data['inspector_signature_png_path'].toString(),
+                          ),
+                          fit: BoxFit.contain,
+                        ),
+                ),
                 Text(
                   'امضاء بازرس',
                   style: PersianFonts.Shabnam.copyWith(fontSize: ctx.scale.pt(11)),
@@ -1026,7 +1030,7 @@ class _Signs extends StatelessWidget {
             child: Column(
               children: [
                 SizedBox(
-                  height: ctx.scale.mm(18),
+                  height: ctx.scale.mm(72),
                   child: url.isEmpty
                       ? const SizedBox.shrink()
                       : Image.network(url, fit: BoxFit.contain),

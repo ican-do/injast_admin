@@ -346,6 +346,7 @@ class ExcelImportService {
     var geocodeFailures = 0;
     var updatedCount = 0;
     var updateFailures = 0;
+    final updateMisses = <ExcelParsedRow>[];
 
     // —— به‌روزرسانی پرونده‌های موجود (فقط وضعیت + تاریخ صدور) ——
     _updLog(
@@ -382,9 +383,9 @@ class ExcelImportService {
         final rawIssueDate = _cell(row.values, ExcelImportColumns.issueDate);
         final statusLabel = ParvandeVaziyat.normalizeLabel(rawStatus);
         final statusCode = ParvandeVaziyat.codeForLabel(statusLabel);
-        // تاریخ شمسی با `-` (بدون `/`) تا path سرور نشکند؛ تبدیل میلادی نکن.
-        final issueJalali = JalaliDateUtil.toPathSafeJalali(rawIssueDate);
-        final expJalali = CsvParvandeDates.computeExpJalaliPathSafe(rawIssueDate);
+        final issueJalali = JalaliDateUtil.normalizeJalaliDisplay(rawIssueDate);
+        final expJalali = CsvParvandeDates.computeExpJalaliPathSafe(rawIssueDate)
+            .replaceAll('-', '/');
         final oldStatus = '${serverRow['lbl_vaziyat_store']}/${serverRow['vaziyat_store']}';
         final oldDate = '${serverRow['date_sodor_store']}';
         final oldExp = '${serverRow['date_exp_store']}';
@@ -402,23 +403,34 @@ class ExcelImportService {
           '${row.values.entries.map((e) => '${e.key}=${_short(e.value, 40)}').join(' | ')}',
         );
 
-        final updateResult = await _parvandeApi.updateParvandeh(
-          serverRow,
-          overrides: {
-            'vaziyat_store': statusCode,
-            'lbl_vaziyat_store': statusLabel,
-            'date_sodor_store': issueJalali,
-            'date_exp_store': expJalali,
-          },
-          verboseLog: true,
+        final updateResult = await _parvandeApi.updateParvandeImportFields(
+          codeCo: codeCo,
+          shenase: shenase,
+          vaziyatStore: statusCode,
+          lblVaziyatStore: statusLabel,
+          dateSodor: issueJalali,
+          dateExp: expJalali,
         );
-        updatedCount += 1;
-        _updLog(
-          'UPDATE OK ${i + 1}/${toUpdate.length} | shenase=$shenase | id=$id | '
-          'sentStatus=$statusCode/$statusLabel | sentDate=$issueJalali | '
-          'sentExp=$expJalali | '
-          'http=${updateResult.statusCode} | body=${_short(updateResult.body, 120)}',
-        );
+        if (updateResult['found'] == true && updateResult['updated'] == true) {
+          updatedCount += 1;
+          _updLog(
+            'UPDATE OK ${i + 1}/${toUpdate.length} | shenase=$shenase | id=$id | '
+            'sentStatus=$statusCode/$statusLabel | sentDate=$issueJalali | '
+            'sentExp=$expJalali | idServer=${updateResult['id_parvandeh']}',
+          );
+        } else if (updateResult['found'] != true) {
+          _updLog(
+            'UPDATE MISS ${i + 1}/${toUpdate.length} | shenase=$shenase | '
+            'پرونده با این شناسه پیدا نشد؛ به ثبت جدید می‌رود',
+          );
+          updateMisses.add(row);
+        } else {
+          updateFailures += 1;
+          _updLog(
+            'UPDATE NOT APPLIED ${i + 1}/${toUpdate.length} | shenase=$shenase | '
+            '$updateResult',
+          );
+        }
       } catch (e, st) {
         updateFailures += 1;
         _updLog('UPDATE FAIL ${i + 1}/${toUpdate.length} | shenase=$shenase | $e');
@@ -426,9 +438,12 @@ class ExcelImportService {
       }
       workDone += 1;
     }
+    if (updateMisses.isNotEmpty) {
+      toInsert.addAll(updateMisses);
+    }
     _updLog(
       'UPDATE END | ok=$updatedCount | fail=$updateFailures | '
-      'insertQueued=${toInsert.length}',
+      'missedThenInsert=${updateMisses.length} | insertQueued=${toInsert.length}',
     );
 
     // —— ثبت پرونده‌های جدید ——

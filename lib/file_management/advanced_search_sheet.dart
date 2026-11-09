@@ -79,7 +79,9 @@ class AdvancedFilters {
 
     bool match(String haystack, String needle) {
       if (needle.trim().isEmpty) return true;
-      return haystack.toLowerCase().contains(needle.trim().toLowerCase());
+      return foldPersianKaf(haystack)
+          .toLowerCase()
+          .contains(foldPersianKaf(needle.trim()).toLowerCase());
     }
 
     r = r.where((p) {

@@ -452,7 +452,6 @@ class _EblaghPage extends StatelessWidget {
         Text(body, textAlign: TextAlign.justify, style: ctx.st(11)),
         SizedBox(height: ctx.mm(10)),
         Text('با تقدیم احترام', textAlign: TextAlign.center, style: ctx.st(11)),
-        Text(ctx.union, textAlign: TextAlign.center, style: ctx.st(10, w: FontWeight.w700)),
         SizedBox(height: ctx.mm(16)),
         Row(
           children: [
@@ -647,7 +646,7 @@ class _AdvaryPage extends StatelessWidget {
         ),
         SizedBox(height: ctx.mm(3)),
         _pair(ctx, 'احتراماً اینجانب', ctx.inspector.isEmpty ? ctx.field('بازرس') : ctx.inspector,
-            'بازرس عضو کمیسیون بازرسی اتحادیه صنف', ctx.union),
+            'بازرس عضو کمیسیون بازرسی', ''),
         SizedBox(height: ctx.mm(2)),
         _pair(ctx, 'از واحد صنفی', ctx.field('واحد صنفی', parvandeKey: 'name_store'),
             'به نشانی', ctx.field('نشانی', parvandeKey: 'address_store')),

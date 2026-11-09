@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:injast_admin/features/shekayat/compat/class_controler.dart';
 import 'package:injast_admin/features/shekayat/compat/screen_util_shim.dart';
 import 'package:injast_admin/features/shekayat/compat/select.dart';
 import 'package:injast_admin/features/shekayat/shekayat_api.dart';
@@ -69,7 +70,7 @@ class _ShekayatExpertPageState extends State<ShekayatExpertPage> {
       final myId = Permissions.currentUserId;
       list = list.where((r) => r['id_expert']?.toString() == myId).toList();
     }
-    final q = _searchCtrl.text.trim().toLowerCase();
+    final q = foldPersianKaf(_searchCtrl.text.trim()).toLowerCase();
     if (q.isEmpty) return list;
     return list.where((r) {
       final m = r as Map;
@@ -79,7 +80,7 @@ class _ShekayatExpertPageState extends State<ShekayatExpertPage> {
         m['specialty'], m['degree'], m['opinion_text'], m['damage_amount'],
         m['date_delivery'], m['date_expertise'], m['date_receive'], m['opinion_date'],
       ];
-      return fields.any((f) => (f?.toString().toLowerCase() ?? '').contains(q));
+      return fields.any((f) => foldPersianKaf(f?.toString() ?? '').toLowerCase().contains(q));
     }).toList();
   }
 

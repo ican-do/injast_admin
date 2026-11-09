@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:injast_admin/file_management/parvande_api.dart';
 import 'package:injast_admin/injast_http.dart' as http;
 import 'package:injast_admin/server_config.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -56,7 +57,7 @@ class _UnionMembersPageState extends State<UnionMembersPage> {
   bool _isActive(Map<String, dynamic> m) => !_isTrash(m);
 
   List<Map<String, dynamic>> get _list {
-    final q = _searchCtrl.text.trim().toLowerCase();
+    final q = foldPersianKaf(_searchCtrl.text.trim()).toLowerCase();
     return _all.where((m) {
       if (_mode == 'active' && !_isActive(m)) return false;
       if (_mode == 'trash' && !_isTrash(m)) return false;
@@ -68,8 +69,8 @@ class _UnionMembersPageState extends State<UnionMembersPage> {
         _s(m, 'mob_admin'),
         _s(m, 'code_meli_admin'),
         _s(m, 'raste_store'),
-      ].join(' ').toLowerCase();
-      return bag.contains(q);
+      ].join(' ');
+      return foldPersianKaf(bag).toLowerCase().contains(q);
     }).toList();
   }
 

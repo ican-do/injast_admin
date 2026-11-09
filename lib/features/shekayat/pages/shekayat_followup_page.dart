@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:injast_admin/features/shekayat/compat/class_controler.dart';
 import 'package:injast_admin/features/shekayat/compat/screen_util_shim.dart';
 import 'package:injast_admin/features/shekayat/compat/select.dart';
 import 'package:injast_admin/features/shekayat/shekayat_api.dart';
@@ -61,14 +62,14 @@ class _ShekayatFollowupPageState extends State<ShekayatFollowupPage> {
   }
 
   List<dynamic> get _filtered {
-    final q = _searchCtrl.text.trim().toLowerCase();
+    final q = foldPersianKaf(_searchCtrl.text.trim()).toLowerCase();
     if (q.isEmpty) return _items;
     return _items.where((r) {
       final m = r as Map;
       final fields = [
         m['user_name'], m['followup_date'], m['description'], m['id_user'],
       ];
-      return fields.any((f) => (f?.toString().toLowerCase() ?? '').contains(q));
+      return fields.any((f) => foldPersianKaf(f?.toString() ?? '').toLowerCase().contains(q));
     }).toList();
   }
 

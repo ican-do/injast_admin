@@ -40,14 +40,20 @@ String convert_date_persian(DateTime date_) {
   }
 }
 
+/// کاف عربی (ك) و کاف فارسی (ک) در جستجو یکی حساب می‌شوند.
+String foldPersianKaf(String input) =>
+    input.replaceAll('ك', 'ک').replaceAll('ڪ', 'ک');
+
 List filterListByFields(
   List list,
   List<String> fieldNames,
   String query,
 ) {
-  final q = query.toLowerCase();
+  final q = foldPersianKaf(query).toLowerCase();
   return list
       .where((item) => fieldNames.any((fieldName) =>
-          item[fieldName]?.toString().toLowerCase().contains(q) ?? false))
+          foldPersianKaf(item[fieldName]?.toString() ?? '')
+              .toLowerCase()
+              .contains(q)))
       .toList();
 }

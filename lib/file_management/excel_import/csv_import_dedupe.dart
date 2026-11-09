@@ -17,15 +17,17 @@ class CsvImportDedupeResult {
 
 /// مرتب‌سازی بر اساس کد صنفی و حذف تکراری‌ها با قوانین وضعیت/تاریخ صدور.
 ///
-/// قوانین برای هر گروه با کد صنفی یکسان:
-/// ۱) اگر حداقل یک «فعال/صادر شده» باشد → همان نگه داشته می‌شود (در چندتایی، تاریخ صدور جدیدتر).
-/// ۲) وگرنه ردیف‌های «ابطال» / «ابطال متقاضی» حذف می‌شوند و از باقی‌مانده یکی نگه داشته می‌شود.
-/// ۳) اگر همه ابطال/ابطال متقاضی باشند → ردیف با تاریخ صدور جدیدتر (مقایسه پس از تبدیل به میلادی).
+/// برای هر گروه با کد صنفی یکسان فقط یک ردیف می‌ماند:
+/// ۱) «فعال/صادر شده» بر هر وضعیت دیگری مقدم است. بین چند فعال، تاریخ صدور جدیدتر.
+/// ۲) هر وضعیتی غیر از دو نوع ابطال، بر «ابطال متقاضی» و «ابطال» مقدم است. بین آن‌ها تاریخ صدور جدیدتر.
+/// ۳) «ابطال متقاضی» همیشه بر «ابطال» مقدم است، حتی اگر تاریخ صدور ابطال جدیدتر باشد.
+/// ۴) بین چند «ابطال متقاضی»، یا چند «ابطال»، تاریخ صدور جدیدتر می‌ماند.
 class CsvImportDedupe {
   CsvImportDedupe._();
 
   static const activeStatus = 'فعال/صادر شده';
-  static const revokedStatuses = {'ابطال', 'ابطال متقاضی'};
+  static const applicantRevokedStatus = 'ابطال متقاضی';
+  static const revokedStatus = 'ابطال';
 
   static CsvImportDedupeResult apply(List<ExcelParsedRow> rows) {
     if (rows.isEmpty) {
@@ -73,10 +75,21 @@ class CsvImportDedupe {
       return _latestIssueDate(active);
     }
 
-    final nonRevoked =
-        group.where((r) => !revokedStatuses.contains(_status(r))).toList();
+    final nonRevoked = group
+        .where(
+          (r) =>
+              _status(r) != applicantRevokedStatus &&
+              _status(r) != revokedStatus,
+        )
+        .toList();
     if (nonRevoked.isNotEmpty) {
       return _latestIssueDate(nonRevoked);
+    }
+
+    final applicant =
+        group.where((r) => _status(r) == applicantRevokedStatus).toList();
+    if (applicant.isNotEmpty) {
+      return _latestIssueDate(applicant);
     }
 
     return _latestIssueDate(group);

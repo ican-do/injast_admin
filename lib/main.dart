@@ -16,6 +16,7 @@ import 'package:injast_admin/features/news/manage_news_page.dart';
 import 'package:injast_admin/features/inspections/inspection_archive_page.dart';
 import 'package:injast_admin/features/parvande_new/parvande_register_mode.dart';
 import 'package:injast_admin/features/permissions/manage_access_page.dart';
+import 'package:injast_admin/features/shekayat/compat/permissions.dart';
 import 'package:injast_admin/features/personnel/manage_personnel_page.dart';
 import 'package:injast_admin/features/personnel/personnel_display_page.dart';
 import 'package:injast_admin/features/portal/manage_portal_hub_page.dart';
@@ -30,6 +31,7 @@ import 'package:injast_admin/features/shekayat/manage_shekayat_page.dart';
 import 'package:injast_admin/features/shekayat/register_shekayat_page.dart';
 import 'package:injast_admin/features/shekayat/shekayat_reports_page.dart';
 import 'package:injast_admin/features/tutorials/manage_tutorials_page.dart';
+import 'package:injast_admin/features/union_settings/union_settings_page.dart';
 import 'package:injast_admin/file_management/bazrasi_map_page.dart';
 import 'package:injast_admin/file_management/data_backup_page.dart';
 import 'package:injast_admin/file_management/file_management_page.dart';
@@ -256,7 +258,7 @@ class _LoggedInHome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final categories = _panelCategories;
+    final categories = _visiblePanelCategories();
     return _UserContext(
       user: user,
       unionInfo: unionInfo,
@@ -372,6 +374,13 @@ class _PanelItemTile extends StatelessWidget {
             return false;
           }
 
+          if (!_canOpenAction(item.actionKey)) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('دسترسی به این بخش مجاز نیست.')),
+            );
+            return;
+          }
+
           switch (item.actionKey) {
             case 'asnaf_site':
               if (!requireCodeCo()) return;
@@ -462,24 +471,33 @@ class _PanelItemTile extends StatelessWidget {
               return;
             case 'shekayat_hub':
               if (!requireCodeCo()) return;
+              if (!Permissions.canManageShekayat() &&
+                  !Permissions.canCreateShekayat()) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('دسترسی به شکایات مجاز نیست.')),
+                );
+                return;
+              }
               final choice = await showFeatureHubSheet<String>(
                 context: context,
                 title: 'شکایات',
-                items: const [
-                  FeatureHubItem(
-                    label: 'مدیریت شکایات',
-                    subtitle: 'پیگیری و بررسی پرونده‌های شکایت',
-                    icon: FluentIcons.clipboard_error_24_regular,
-                    color: Color(0xFFD32F2F),
-                    value: 'manage',
-                  ),
-                  FeatureHubItem(
-                    label: 'ثبت شکایت',
-                    subtitle: 'ثبت شکایت جدید',
-                    icon: FluentIcons.document_edit_24_regular,
-                    color: Color(0xFF8E24AA),
-                    value: 'register',
-                  ),
+                items: [
+                  if (Permissions.canManageShekayat())
+                    const FeatureHubItem(
+                      label: 'مدیریت شکایات',
+                      subtitle: 'پیگیری و بررسی پرونده‌های شکایت',
+                      icon: FluentIcons.clipboard_error_24_regular,
+                      color: Color(0xFFD32F2F),
+                      value: 'manage',
+                    ),
+                  if (Permissions.canCreateShekayat())
+                    const FeatureHubItem(
+                      label: 'ثبت شکایت',
+                      subtitle: 'ثبت شکایت جدید',
+                      icon: FluentIcons.document_edit_24_regular,
+                      color: Color(0xFF8E24AA),
+                      value: 'register',
+                    ),
                 ],
               );
               if (!context.mounted || choice == null) return;
@@ -678,11 +696,9 @@ class _PanelItemTile extends StatelessWidget {
     final rect =
         Rect.fromLTWH(topLeft.dx, topLeft.dy, box.size.width, box.size.height);
 
-    final selected = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
-      items: const [
-        PopupMenuItem(
+    final items = <PopupMenuEntry<String>>[
+      if (Permissions.canInsertBaseData())
+        const PopupMenuItem(
           value: 'sync',
           child: ListTile(
             dense: true,
@@ -690,7 +706,8 @@ class _PanelItemTile extends StatelessWidget {
             title: Text('بازیابی اطلاعات'),
           ),
         ),
-        PopupMenuItem(
+      if (Permissions.canManageUsers())
+        const PopupMenuItem(
           value: 'access',
           child: ListTile(
             dense: true,
@@ -698,15 +715,26 @@ class _PanelItemTile extends StatelessWidget {
             title: Text('سطح دسترسی'),
           ),
         ),
-        PopupMenuItem(
+      if (Permissions.canManageUnionSettings())
+        const PopupMenuItem(
           value: 'special',
           child: ListTile(
             dense: true,
-            leading: Icon(Icons.flag_outlined),
-            title: Text('موارد خاص'),
+            leading: Icon(Icons.apartment_outlined),
+            title: Text('تنظیمات اتحادیه'),
           ),
         ),
-      ],
+    ];
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('دسترسی به تنظیمات مجاز نیست.')),
+      );
+      return;
+    }
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
+      items: items,
     );
     if (selected == null || !context.mounted) return;
     final user = _UserContext.of(context);
@@ -729,9 +757,12 @@ class _PanelItemTile extends StatelessWidget {
       );
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('گزینه «موارد خاص» به‌زودی فعال می‌شود.')),
-    );
+    if (selected == 'special') {
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => UnionSettingsPage(codeCo: codeCo)),
+      );
+      return;
+    }
   }
 }
 
@@ -781,6 +812,70 @@ class _UserContext extends InheritedWidget {
   @override
   bool updateShouldNotify(covariant _UserContext oldWidget) =>
       oldWidget.user != user || oldWidget.unionInfo != unionInfo;
+}
+
+bool _canOpenAction(String? key) {
+  switch (key) {
+    case 'manage_raste':
+      return Permissions.canManageRaste();
+    case 'asnaf_site':
+      return Permissions.canAsnafSite();
+    case 'file_management':
+    case 'union_members':
+      return Permissions.canManageMembers();
+    case 'data_backup':
+      return Permissions.canDataBackup();
+    case 'personnel_display':
+      return Permissions.canViewPersonnelNames();
+    case 'manage_personnel':
+      return Permissions.canManagePersonnel();
+    case 'manage_rate_sheets':
+      return Permissions.canManageRateSheets();
+    case 'settings_menu':
+      return Permissions.canOpenSettingsMenu();
+    case 'new_parvande':
+      return Permissions.canCreateParvande();
+    case 'shekayat_hub':
+      return Permissions.canShekayatMenu();
+    case 'hagh_ozviat_reports':
+      return Permissions.canViewReports() || Permissions.canViewMembershipFee();
+    case 'bazrasi_reports':
+      return Permissions.canViewReports();
+    case 'shekayat_reports':
+      return Permissions.canShekReports();
+    case 'inspection_map':
+      return Permissions.canBazrasiMenu();
+    case 'inspection_archive':
+      return Permissions.canViewInspectionArchive();
+    case 'my_calendar':
+      return Permissions.canViewCalendar();
+    case 'manage_laws':
+      return Permissions.canViewRulesAndRegulations();
+    case 'member_requests':
+      return Permissions.canViewMemberRequests();
+    case 'manage_benefits':
+      return Permissions.canViewBenefitsAndServices();
+    case 'manage_news':
+      return Permissions.canViewNews();
+    case 'manage_tutorials':
+      return Permissions.canViewEducation();
+    case 'manage_portal':
+      return Permissions.canManagePortal();
+    default:
+      return false;
+  }
+}
+
+List<_PanelCategory> _visiblePanelCategories() {
+  return _panelCategories
+      .map((c) => _PanelCategory(
+            title: c.title,
+            titleIcon: c.titleIcon,
+            titleColor: c.titleColor,
+            items: c.items.where((i) => _canOpenAction(i.actionKey)).toList(),
+          ))
+      .where((c) => c.items.isNotEmpty)
+      .toList();
 }
 
 const List<_PanelCategory> _panelCategories = [
@@ -1097,46 +1192,52 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
                   Color accent,
                   IconData icon,
                 })>[
-                  (
-                    title: 'کل اعضا',
-                    value: _formatInt(insights.totalMembers),
-                    accent: const Color(0xFF4FC3F7),
-                    icon: Icons.people_alt_outlined,
-                  ),
-                  (
-                    title: 'فعال',
-                    value: _formatInt(insights.activeMembers),
-                    accent: const Color(0xFF80CBC4),
-                    icon: Icons.verified_user_outlined,
-                  ),
-                  (
-                    title: 'بدهی',
-                    value: _formatMoneyRial(insights.totalDebt),
-                    accent: const Color(0xFFFF8A65),
-                    icon: Icons.account_balance_wallet_outlined,
-                  ),
-                  (
-                    title: 'جدید ماه',
-                    value: _formatInt(insights.newMembersThisMonth),
-                    accent: const Color(0xFFA5D6A7),
-                    icon: Icons.person_add_alt_1_outlined,
-                  ),
-                  (
-                    title: 'بازرسی ماه',
-                    value: loadingInsights && !snapshot.hasData
-                        ? '...'
-                        : (insights.inspectionsThisMonth == null
-                            ? '—'
-                            : _formatInt(insights.inspectionsThisMonth!)),
-                    accent: const Color(0xFF90CAF9),
-                    icon: Icons.fact_check_outlined,
-                  ),
-                  (
-                    title: 'انقضا ماه',
-                    value: _formatInt(insights.expiringThisMonth),
-                    accent: const Color(0xFFFFCC80),
-                    icon: Icons.event_busy_outlined,
-                  ),
+                  if (Permissions.canHomeCountParvande())
+                    (
+                      title: 'کل اعضا',
+                      value: _formatInt(insights.totalMembers),
+                      accent: const Color(0xFF4FC3F7),
+                      icon: Icons.people_alt_outlined,
+                    ),
+                  if (Permissions.canHomeCountUsers())
+                    (
+                      title: 'فعال',
+                      value: _formatInt(insights.activeMembers),
+                      accent: const Color(0xFF80CBC4),
+                      icon: Icons.verified_user_outlined,
+                    ),
+                  if (Permissions.canHomeStatDebtTotal())
+                    (
+                      title: 'بدهی',
+                      value: _formatMoneyRial(insights.totalDebt),
+                      accent: const Color(0xFFFF8A65),
+                      icon: Icons.account_balance_wallet_outlined,
+                    ),
+                  if (Permissions.canHomeStatNewMonth())
+                    (
+                      title: 'جدید ماه',
+                      value: _formatInt(insights.newMembersThisMonth),
+                      accent: const Color(0xFFA5D6A7),
+                      icon: Icons.person_add_alt_1_outlined,
+                    ),
+                  if (Permissions.canHomeStatInspectionsMonth())
+                    (
+                      title: 'بازرسی ماه',
+                      value: loadingInsights && !snapshot.hasData
+                          ? '...'
+                          : (insights.inspectionsThisMonth == null
+                              ? '—'
+                              : _formatInt(insights.inspectionsThisMonth!)),
+                      accent: const Color(0xFF90CAF9),
+                      icon: Icons.fact_check_outlined,
+                    ),
+                  if (Permissions.canHomeStatExpiringMonth())
+                    (
+                      title: 'انقضا ماه',
+                      value: _formatInt(insights.expiringThisMonth),
+                      accent: const Color(0xFFFFCC80),
+                      icon: Icons.event_busy_outlined,
+                    ),
                 ];
 
                 return Column(
@@ -1211,28 +1312,31 @@ class _LoggedInTopPanelState extends State<_LoggedInTopPanel> {
                         _infoPill(Icons.qr_code_2_outlined, _u('code_co')),
                         if (_co('tel1_co') != '—')
                           _infoPill(Icons.call_outlined, _co('tel1_co')),
-                        _infoPill(
-                          Icons.update_outlined,
-                          _lastImportPill(widget.memberStats?['last_parvande_import']),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        for (var i = 0; i < metrics.length; i++) ...[
-                          if (i > 0) const SizedBox(width: 6),
-                          Expanded(
-                            child: _compactMetric(
-                              title: metrics[i].title,
-                              value: metrics[i].value,
-                              accent: metrics[i].accent,
-                              icon: metrics[i].icon,
-                            ),
+                        if (Permissions.canHomeCountUpdate())
+                          _infoPill(
+                            Icons.update_outlined,
+                            _lastImportPill(widget.memberStats?['last_parvande_import']),
                           ),
-                        ],
                       ],
                     ),
+                    if (metrics.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          for (var i = 0; i < metrics.length; i++) ...[
+                            if (i > 0) const SizedBox(width: 6),
+                            Expanded(
+                              child: _compactMetric(
+                                title: metrics[i].title,
+                                value: metrics[i].value,
+                                accent: metrics[i].accent,
+                                icon: metrics[i].icon,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ],
                   ],
                 );
               },
